@@ -12,6 +12,6 @@ import com.readassistant.feature.translation.domain.TranslationPair
 @Composable
 fun BilingualReaderOverlay(paragraphs: List<Pair<Int, String>>, translations: Map<Int, TranslationPair>, modifier: Modifier = Modifier) {
     LazyColumn(modifier = modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        items(paragraphs) { (i, t) -> BilingualParagraph(originalText = t, translatedText = translations[i]?.translatedText ?: "", isStreaming = translations[i]?.isComplete == false) }
+        items(paragraphs) { (i, t) -> BilingualParagraph(originalText = t, translatedText = translations[i]?.translatedText ?: "", isTranslating = translations[i]?.isComplete == false) }
     }
 }

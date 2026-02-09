@@ -162,7 +162,7 @@ private fun ProviderItem(
 ) {
     ListItem(
         headlineContent = {
-            Text(provider.name.ifBlank { provider.providerType })
+            Text(provider.providerType)
         },
         supportingContent = {
             Text("${provider.providerType} - ${provider.modelName}")
@@ -297,7 +297,6 @@ private fun AddProviderDialog(
                 onClick = {
                     onAdd(LlmProviderEntity(
                         providerType = providerType.name,
-                        name = name,
                         apiKey = apiKey,
                         baseUrl = baseUrl,
                         modelName = modelName,

@@ -10,7 +10,7 @@ interface NoteDao {
     fun getNotesByHighlight(highlightId: Long): Flow<List<NoteEntity>>
 
     @Query("SELECT * FROM notes WHERE contentType = :type AND contentId = :id ORDER BY createdAt DESC")
-    fun getNotesByContent(type: String, id: String): Flow<List<NoteEntity>>
+    fun getNotesByContent(type: String, id: Long): Flow<List<NoteEntity>>
 
     @Insert
     suspend fun insert(note: NoteEntity): Long

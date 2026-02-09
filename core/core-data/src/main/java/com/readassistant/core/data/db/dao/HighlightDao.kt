@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface HighlightDao {
     @Query("SELECT * FROM highlights WHERE contentType = :type AND contentId = :id ORDER BY createdAt DESC")
-    fun getHighlights(type: String, id: String): Flow<List<HighlightEntity>>
+    fun getHighlights(type: String, id: Long): Flow<List<HighlightEntity>>
 
     @Insert
     suspend fun insert(highlight: HighlightEntity): Long

@@ -7,14 +7,14 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface ReadingProgressDao {
     @Query("SELECT * FROM reading_progress WHERE contentType = :type AND contentId = :id")
-    suspend fun getProgress(type: String, id: String): ReadingProgressEntity?
+    suspend fun getProgress(type: String, id: Long): ReadingProgressEntity?
 
-    @Query("SELECT * FROM reading_progress ORDER BY lastReadAt DESC")
+    @Query("SELECT * FROM reading_progress ORDER BY updatedAt DESC")
     fun getRecentProgress(): Flow<List<ReadingProgressEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(progress: ReadingProgressEntity)
 
     @Query("DELETE FROM reading_progress WHERE contentType = :type AND contentId = :id")
-    suspend fun delete(type: String, id: String)
+    suspend fun delete(type: String, id: Long)
 }

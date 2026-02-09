@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface BookmarkDao {
     @Query("SELECT * FROM bookmarks WHERE contentType = :type AND contentId = :id ORDER BY createdAt DESC")
-    fun getBookmarks(type: String, id: String): Flow<List<BookmarkEntity>>
+    fun getBookmarks(type: String, id: Long): Flow<List<BookmarkEntity>>
 
     @Insert
     suspend fun insert(bookmark: BookmarkEntity): Long

@@ -21,7 +21,7 @@ class ReaderViewModel @Inject constructor(
     private val highlightDao: HighlightDao, private val userPreferences: UserPreferences
 ) : ViewModel() {
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
-    private val contentId: String = savedStateHandle.get<String>("contentId") ?: ""
+    private val contentIdLong: Long = (savedStateHandle.get<String>("contentId") ?: "0").toLongOrNull() ?: 0L
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
     val themeType = userPreferences.themeType; val fontSize = userPreferences.fontSize; val lineHeight = userPreferences.lineHeight
@@ -31,9 +31,9 @@ class ReaderViewModel @Inject constructor(
     private fun loadContent() { viewModelScope.launch {
         _uiState.update { it.copy(isLoading = true) }
         try { when (contentTypeStr) {
-            "RSS_ARTICLE" -> { val a = articleDao.getArticleById(contentId.toLong()); if (a != null) _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.extractedContent.ifEmpty { a.content }, contentType = ContentType.RSS_ARTICLE, contentId = contentId) } }
-            "WEB_ARTICLE" -> { val a = webArticleDao.getArticleById(contentId.toLong()); if (a != null) _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.content, contentType = ContentType.WEB_ARTICLE, contentId = contentId) } }
-            "BOOK" -> { val b = bookDao.getBookById(contentId.toLong()); if (b != null) _uiState.update { it.copy(isLoading = false, title = b.title, htmlContent = "<p>Book: ${b.format}</p>", contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB }, contentId = contentId, totalChapters = b.totalChapters) } }
+            "RSS_ARTICLE" -> { val a = articleDao.getArticleById(contentIdLong); if (a != null) _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.extractedContent?.ifEmpty { null } ?: a.content, contentType = ContentType.RSS_ARTICLE, contentId = contentIdLong) } }
+            "WEB_ARTICLE" -> { val a = webArticleDao.getArticleById(contentIdLong); if (a != null) _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.content, contentType = ContentType.WEB_ARTICLE, contentId = contentIdLong) } }
+            "BOOK" -> { val b = bookDao.getBookById(contentIdLong); if (b != null) _uiState.update { it.copy(isLoading = false, title = b.title, htmlContent = "<p>Book: ${b.format}</p>", contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB }, contentId = contentIdLong, totalChapters = b.totalChapters) } }
             else -> _uiState.update { it.copy(isLoading = false, error = "Unknown content type") }
         } } catch (e: Exception) { _uiState.update { it.copy(isLoading = false, error = e.message) } }
     }}

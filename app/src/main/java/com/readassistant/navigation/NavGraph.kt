@@ -1,6 +1,7 @@
 package com.readassistant.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -18,10 +19,11 @@ import com.readassistant.feature.webarticle.presentation.SavedArticlesScreen
 import com.readassistant.feature.webarticle.presentation.UrlInputScreen
 
 @Composable
-fun NavGraph(navController: NavHostController) {
+fun NavGraph(navController: NavHostController, modifier: Modifier = Modifier) {
     NavHost(
         navController = navController,
-        startDestination = Screen.FeedList.route
+        startDestination = Screen.FeedList.route,
+        modifier = modifier
     ) {
         // Bottom nav tabs
         composable(Screen.FeedList.route) {

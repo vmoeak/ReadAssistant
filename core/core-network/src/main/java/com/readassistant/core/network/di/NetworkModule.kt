@@ -62,6 +62,12 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun provideOkHttpClient(
+        @DefaultOkHttpClient client: OkHttpClient
+    ): OkHttpClient = client
+
+    @Provides
+    @Singleton
     fun provideRetrofit(
         @DefaultOkHttpClient okHttpClient: OkHttpClient
     ): Retrofit {

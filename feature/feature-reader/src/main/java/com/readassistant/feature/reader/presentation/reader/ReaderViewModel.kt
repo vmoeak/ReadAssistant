@@ -9,16 +9,21 @@ import com.readassistant.core.data.db.entity.ReadingProgressEntity
 import com.readassistant.core.data.datastore.UserPreferences
 import com.readassistant.core.domain.model.ContentType
 import com.readassistant.core.domain.model.TextSelection
+import com.readassistant.feature.library.data.parser.BookParserFactory
+import com.readassistant.feature.library.domain.BookFormat
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle, private val articleDao: ArticleDao, private val bookDao: BookDao,
     private val webArticleDao: WebArticleDao, private val readingProgressDao: ReadingProgressDao,
-    private val highlightDao: HighlightDao, private val userPreferences: UserPreferences
+    private val highlightDao: HighlightDao, private val userPreferences: UserPreferences,
+    private val bookParserFactory: BookParserFactory
 ) : ViewModel() {
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
     private val contentIdLong: Long = (savedStateHandle.get<String>("contentId") ?: "0").toLongOrNull() ?: 0L
@@ -31,9 +36,39 @@ class ReaderViewModel @Inject constructor(
     private fun loadContent() { viewModelScope.launch {
         _uiState.update { it.copy(isLoading = true) }
         try { when (contentTypeStr) {
-            "RSS_ARTICLE" -> { val a = articleDao.getArticleById(contentIdLong); if (a != null) _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.extractedContent?.ifEmpty { null } ?: a.content, contentType = ContentType.RSS_ARTICLE, contentId = contentIdLong) } }
-            "WEB_ARTICLE" -> { val a = webArticleDao.getArticleById(contentIdLong); if (a != null) _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.content, contentType = ContentType.WEB_ARTICLE, contentId = contentIdLong) } }
-            "BOOK" -> { val b = bookDao.getBookById(contentIdLong); if (b != null) _uiState.update { it.copy(isLoading = false, title = b.title, htmlContent = "<p>Book: ${b.format}</p>", contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB }, contentId = contentIdLong, totalChapters = b.totalChapters) } }
+            "RSS_ARTICLE" -> {
+                val a = articleDao.getArticleById(contentIdLong)
+                if (a != null) {
+                    val content = a.extractedContent?.ifEmpty { null } ?: a.content
+                    _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = content, contentType = ContentType.RSS_ARTICLE, contentId = contentIdLong) }
+                } else {
+                    _uiState.update { it.copy(isLoading = false, error = "Article not found") }
+                }
+            }
+            "WEB_ARTICLE" -> {
+                val a = webArticleDao.getArticleById(contentIdLong)
+                if (a != null) {
+                    _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.content, contentType = ContentType.WEB_ARTICLE, contentId = contentIdLong) }
+                } else {
+                    _uiState.update { it.copy(isLoading = false, error = "Article not found") }
+                }
+            }
+            "BOOK" -> {
+                val b = bookDao.getBookById(contentIdLong)
+                if (b != null) {
+                    val format = try { BookFormat.valueOf(b.format) } catch (_: Exception) { null }
+                    val htmlContent = if (format != null) {
+                        withContext(Dispatchers.IO) {
+                            bookParserFactory.getParser(format).extractContent(b.filePath)
+                        }
+                    } else {
+                        "<p>Unsupported format: ${b.format}</p>"
+                    }
+                    _uiState.update { it.copy(isLoading = false, title = b.title, htmlContent = htmlContent, contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB }, contentId = contentIdLong, totalChapters = b.totalChapters) }
+                } else {
+                    _uiState.update { it.copy(isLoading = false, error = "Book not found") }
+                }
+            }
             else -> _uiState.update { it.copy(isLoading = false, error = "Unknown content type") }
         } } catch (e: Exception) { _uiState.update { it.copy(isLoading = false, error = e.message) } }
     }}

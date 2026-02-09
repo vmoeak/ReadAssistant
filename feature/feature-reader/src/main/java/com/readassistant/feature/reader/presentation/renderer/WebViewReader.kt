@@ -56,6 +56,8 @@ function removeAllTranslations(){document.querySelectorAll('.translation').forEa
         }
     }
 
+    var lastLoadedHtml by remember { mutableStateOf("") }
+
     AndroidView(factory = { ctx ->
         WebView(ctx).apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
@@ -74,7 +76,12 @@ function removeAllTranslations(){document.querySelectorAll('.translation').forEa
             webViewClient = WebViewClient()
             webViewRef = this
         }
-    }, update = { it.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null) }, modifier = modifier)
+    }, update = { wv ->
+        if (html != lastLoadedHtml) {
+            lastLoadedHtml = html
+            wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+        }
+    }, modifier = modifier)
 }
 
 fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float): String {

@@ -25,5 +25,8 @@ enum class BookFormat(val extensions: List<String>, val mimeTypes: List<String>)
     companion object {
         fun fromExtension(ext: String): BookFormat? =
             entries.find { ext.lowercase() in it.extensions }
+
+        fun fromMimeType(mime: String): BookFormat? =
+            entries.find { mime.lowercase() in it.mimeTypes }
     }
 }

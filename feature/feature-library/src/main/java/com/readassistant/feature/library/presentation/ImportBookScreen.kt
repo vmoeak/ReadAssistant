@@ -2,6 +2,7 @@ package com.readassistant.feature.library.presentation
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -33,12 +34,23 @@ class ImportBookViewModel @Inject constructor(@ApplicationContext private val co
     private val _state = MutableStateFlow<ImportState>(ImportState.Idle)
     val importState: StateFlow<ImportState> = _state
 
+    private fun queryFileName(uri: Uri): String? {
+        return context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }
+
     fun importBook(uri: Uri) { viewModelScope.launch {
         _state.value = ImportState.Loading
         try {
-            val name = uri.lastPathSegment?.substringAfterLast("/") ?: "unknown"
+            val name = queryFileName(uri)
+                ?: uri.lastPathSegment?.substringAfterLast("/")
+                ?: "unknown"
             val ext = name.substringAfterLast(".", "")
-            val format = BookFormat.fromExtension(ext) ?: run { _state.value = ImportState.Error("Unsupported: .$ext"); return@launch }
+            val mimeType = context.contentResolver.getType(uri)
+            val format = BookFormat.fromExtension(ext)
+                ?: mimeType?.let { BookFormat.fromMimeType(it) }
+                ?: run { _state.value = ImportState.Error("Unsupported format: .$ext"); return@launch }
             val dir = File(context.filesDir, "books/${System.currentTimeMillis()}"); dir.mkdirs()
             val dest = File(dir, name)
             context.contentResolver.openInputStream(uri)?.use { i -> dest.outputStream().use { o -> i.copyTo(o) } }

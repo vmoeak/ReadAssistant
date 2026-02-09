@@ -5,9 +5,11 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.readassistant.core.llm.api.*
 import com.readassistant.core.llm.streaming.SseParser
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -48,13 +50,13 @@ class OpenAiProvider @Inject constructor(
             .build()
     }
 
-    override suspend fun sendMessage(messages: List<LlmMessage>, config: LlmConfig): String {
+    override suspend fun sendMessage(messages: List<LlmMessage>, config: LlmConfig): String = withContext(Dispatchers.IO) {
         val request = buildRequest(config, buildBody(messages, config, false))
         val response = httpClient.newCall(request).execute()
         val body = response.body?.string() ?: throw IOException("Empty response")
         if (!response.isSuccessful) throw IOException("API error ${response.code}: $body")
         val json = gson.fromJson(body, JsonObject::class.java)
-        return json.getAsJsonArray("choices")?.get(0)?.asJsonObject
+        json.getAsJsonArray("choices")?.get(0)?.asJsonObject
             ?.getAsJsonObject("message")?.get("content")?.asString
             ?: throw IOException("Invalid response format")
     }

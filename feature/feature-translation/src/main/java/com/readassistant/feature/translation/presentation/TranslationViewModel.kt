@@ -19,7 +19,11 @@ class TranslationViewModel @Inject constructor(private val repo: TranslationRepo
     private val sem = Semaphore(3); private val jobs = mutableMapOf<Int, Job>()
     val sourceLang = prefs.sourceLanguage; val targetLang = prefs.targetLanguage
 
-    fun toggleBilingualMode() { _isBilingual.value = !_isBilingual.value }
+    fun toggleBilingualMode() {
+        val newMode = !_isBilingual.value
+        _isBilingual.value = newMode
+        if (!newMode) clearTranslations()
+    }
     fun translateParagraphs(paragraphs: List<Pair<Int, String>>) { if (!_isBilingual.value) return; viewModelScope.launch { val s = sourceLang.first(); val t = targetLang.first()
         paragraphs.forEach { (i, txt) -> if (_translations.value.containsKey(i) || jobs.containsKey(i) || txt.isBlank()) return@forEach
             jobs[i] = viewModelScope.launch { sem.acquire(); try { repo.getTranslation(i, txt, s, t).collect { p -> _translations.update { it + (i to p) } } } finally { sem.release() } }

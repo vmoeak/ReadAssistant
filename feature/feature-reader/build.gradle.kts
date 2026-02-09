@@ -23,6 +23,7 @@ dependencies {
     implementation(project(":core:core-data"))
     implementation(project(":core:core-domain"))
     implementation(project(":core:core-llm"))
+    implementation(project(":feature:feature-translation"))
     implementation(libs.core.ktx)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

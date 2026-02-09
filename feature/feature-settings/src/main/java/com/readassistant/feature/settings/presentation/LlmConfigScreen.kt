@@ -83,6 +83,11 @@ fun LlmConfigScreen(
     val testResult by viewModel.testResult.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
 
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(testResult) {
+        testResult?.let { snackbarHostState.showSnackbar(it) }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -98,45 +103,36 @@ fun LlmConfigScreen(
             FloatingActionButton(onClick = { showAddDialog = true }) {
                 Icon(Icons.Default.Add, contentDescription = "Add Provider")
             }
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (providers.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            Icons.Default.SmartToy,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(16.dp))
-                        Text("No providers configured", style = MaterialTheme.typography.titleMedium)
-                        Text("Add an LLM provider for translation and AI Q&A",
-                            style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(providers, key = { it.id }) { provider ->
-                        ProviderItem(
-                            provider = provider,
-                            onSetDefault = { viewModel.setDefault(provider.id) },
-                            onTest = { viewModel.testConnection(provider) },
-                            onDelete = { viewModel.deleteProvider(provider) }
-                        )
-                    }
+        if (providers.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Default.SmartToy,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text("No providers configured", style = MaterialTheme.typography.titleMedium)
+                    Text("Add an LLM provider for translation and AI Q&A",
+                        style = MaterialTheme.typography.bodyMedium)
                 }
             }
-
-            testResult?.let {
-                Snackbar(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(it)
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
+                items(providers, key = { it.id }) { provider ->
+                    ProviderItem(
+                        provider = provider,
+                        onSetDefault = { viewModel.setDefault(provider.id) },
+                        onTest = { viewModel.testConnection(provider) },
+                        onDelete = { viewModel.deleteProvider(provider) }
+                    )
                 }
             }
         }

@@ -4,9 +4,11 @@ import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.readassistant.core.llm.api.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -44,7 +46,7 @@ class GeminiProvider @Inject constructor(
         return gson.toJson(body)
     }
 
-    override suspend fun sendMessage(messages: List<LlmMessage>, config: LlmConfig): String {
+    override suspend fun sendMessage(messages: List<LlmMessage>, config: LlmConfig): String = withContext(Dispatchers.IO) {
         val model = config.modelName.ifBlank { "gemini-2.0-flash" }
         val url = "${baseUrl(config)}/v1beta/models/$model:generateContent?key=${config.apiKey}"
         val request = Request.Builder().url(url).addHeader("Content-Type", "application/json")
@@ -53,7 +55,7 @@ class GeminiProvider @Inject constructor(
         val body = response.body?.string() ?: throw IOException("Empty response")
         if (!response.isSuccessful) throw IOException("API error ${response.code}: $body")
         val json = gson.fromJson(body, JsonObject::class.java)
-        return json.getAsJsonArray("candidates")?.get(0)?.asJsonObject
+        json.getAsJsonArray("candidates")?.get(0)?.asJsonObject
             ?.getAsJsonObject("content")?.getAsJsonArray("parts")?.get(0)?.asJsonObject
             ?.get("text")?.asString ?: throw IOException("Invalid response format")
     }

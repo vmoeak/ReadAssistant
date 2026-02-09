@@ -30,11 +30,15 @@ class UrlInputViewModel @Inject constructor(private val extractor: ArticleExtrac
     fun extractArticle(url: String) { viewModelScope.launch {
         _state.value = ExtractState.Loading
         try {
-            val existing = dao.getArticleByUrl(url); if (existing != null) { _state.value = ExtractState.Success(existing.id); return@launch }
-            val r = extractor.extract(url)
-            val id = dao.insert(WebArticleEntity(url = url, title = r.title, content = r.content, textContent = r.textContent, imageUrl = r.imageUrl, siteName = r.siteName))
+            val normalizedUrl = if (!url.matches(Regex("^https?://.*", RegexOption.IGNORE_CASE))) "https://$url" else url
+            val existing = dao.getArticleByUrl(normalizedUrl); if (existing != null) { _state.value = ExtractState.Success(existing.id); return@launch }
+            val r = extractor.extract(normalizedUrl)
+            val id = dao.insert(WebArticleEntity(url = normalizedUrl, title = r.title, content = r.content, textContent = r.textContent, imageUrl = r.imageUrl, siteName = r.siteName))
             _state.value = ExtractState.Success(id)
-        } catch (e: Exception) { _state.value = ExtractState.Error(e.message ?: "Failed") }
+        } catch (e: java.net.UnknownHostException) { _state.value = ExtractState.Error("Cannot resolve host. Check URL or network.")
+        } catch (e: java.net.SocketTimeoutException) { _state.value = ExtractState.Error("Connection timed out. Try again.")
+        } catch (e: org.jsoup.HttpStatusException) { _state.value = ExtractState.Error("HTTP error ${e.statusCode}: ${e.url}")
+        } catch (e: Exception) { _state.value = ExtractState.Error(e.message ?: "Extraction failed") }
     }}
     sealed class ExtractState { data object Idle : ExtractState(); data object Loading : ExtractState(); data class Success(val id: Long) : ExtractState(); data class Error(val msg: String) : ExtractState() }
 }

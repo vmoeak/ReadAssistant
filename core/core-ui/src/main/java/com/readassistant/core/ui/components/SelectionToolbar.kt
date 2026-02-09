@@ -1,5 +1,8 @@
 package com.readassistant.core.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -7,25 +10,19 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 
 @Composable
 fun SelectionToolbar(
-    offset: IntOffset,
+    visible: Boolean,
     onHighlight: () -> Unit,
     onCopy: () -> Unit,
     onNote: () -> Unit,
     onAskAi: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Popup(
-        offset = offset,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = false)
-    ) {
+    AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
         Surface(
             shape = RoundedCornerShape(8.dp),
             shadowElevation = 4.dp,

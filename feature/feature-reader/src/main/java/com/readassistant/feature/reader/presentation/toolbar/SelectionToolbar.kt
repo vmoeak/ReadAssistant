@@ -4,10 +4,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import com.readassistant.core.ui.components.SelectionToolbar as CoreSelectionToolbar
 
-/**
- * Reader-specific selection toolbar that delegates to the core SelectionToolbar component
- * with reader-specific actions.
- */
 @Composable
 fun ReaderSelectionToolbar(
     visible: Boolean,

@@ -12,6 +12,6 @@ import coil.compose.AsyncImage
 @Composable
 fun ImageReader(imagePaths: List<String>, modifier: Modifier = Modifier) {
     LazyColumn(modifier = modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        items(imagePaths) { path -> AsyncImage(model = path, contentDescription = null, contentScale = ContentScale.FitWidth, modifier = Modifier.fillMaxWidth()) }
+        items(imagePaths) { path -> AsyncImage(model = path, contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth()) }
     }
 }

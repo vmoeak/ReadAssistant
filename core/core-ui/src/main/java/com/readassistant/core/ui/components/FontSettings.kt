@@ -7,14 +7,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 
 @Composable
 fun FontSettings(
-    fontSize: Int,
+    fontSize: Float,
     lineHeight: Float,
-    onFontSizeChange: (Int) -> Unit,
+    onFontSizeChange: (Float) -> Unit,
     onLineHeightChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -25,11 +24,11 @@ fun FontSettings(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
         ) {
-            FilledTonalIconButton(onClick = { onFontSizeChange(fontSize - 1) }) {
+            FilledTonalIconButton(onClick = { onFontSizeChange(fontSize - 1f) }) {
                 Text("-", style = MaterialTheme.typography.titleLarge)
             }
-            Text("$fontSize", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            FilledTonalIconButton(onClick = { onFontSizeChange(fontSize + 1) }) {
+            Text("${fontSize.toInt()}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            FilledTonalIconButton(onClick = { onFontSizeChange(fontSize + 1f) }) {
                 Icon(Icons.Default.Add, contentDescription = "Increase")
             }
         }

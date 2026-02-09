@@ -32,7 +32,7 @@ class UrlInputViewModel @Inject constructor(private val extractor: ArticleExtrac
         try {
             val existing = dao.getArticleByUrl(url); if (existing != null) { _state.value = ExtractState.Success(existing.id); return@launch }
             val r = extractor.extract(url)
-            val id = dao.insert(WebArticleEntity(url = url, title = r.title, content = r.content, textContent = r.textContent, author = r.author, imageUrl = r.imageUrl, siteName = r.siteName))
+            val id = dao.insert(WebArticleEntity(url = url, title = r.title, content = r.content, textContent = r.textContent, imageUrl = r.imageUrl, siteName = r.siteName))
             _state.value = ExtractState.Success(id)
         } catch (e: Exception) { _state.value = ExtractState.Error(e.message ?: "Failed") }
     }}

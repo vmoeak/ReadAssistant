@@ -35,7 +35,7 @@ class RssRepositoryImpl @Inject constructor(
         val result = fetcher.fetchFeed(feed.url)
         articleDao.insertAll(result.articles.map { it.copy(feedId = feedId) })
         feedDao.updateUnreadCount(feedId, articleDao.getUnreadCount(feedId))
-        feedDao.updateLastFetchedAt(feedId, System.currentTimeMillis())
+        feedDao.updateLastFetched(feedId, System.currentTimeMillis())
     }
 
     suspend fun refreshAllFeeds() {

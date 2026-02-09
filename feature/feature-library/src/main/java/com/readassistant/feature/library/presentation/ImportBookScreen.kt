@@ -43,7 +43,7 @@ class ImportBookViewModel @Inject constructor(@ApplicationContext private val co
             val dest = File(dir, name)
             context.contentResolver.openInputStream(uri)?.use { i -> dest.outputStream().use { o -> i.copyTo(o) } }
             val meta = parserFactory.getParser(format).parseMetadata(dest.absolutePath)
-            val id = bookDao.insert(BookEntity(filePath = dest.absolutePath, format = format.name, title = meta.title, author = meta.author, coverPath = meta.coverPath, totalChapters = meta.totalChapters, totalPages = meta.totalPages, fileSize = dest.length()))
+            val id = bookDao.insert(BookEntity(filePath = dest.absolutePath, format = format.name, title = meta.title, author = meta.author, coverPath = meta.coverPath, totalChapters = meta.totalChapters, fileSize = dest.length()))
             _state.value = ImportState.Success(id)
         } catch (e: Exception) { _state.value = ImportState.Error(e.message ?: "Import failed") }
     }}

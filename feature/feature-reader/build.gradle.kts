@@ -25,6 +25,7 @@ dependencies {
     implementation(project(":core:core-llm"))
     implementation(project(":feature:feature-translation"))
     implementation(project(":feature:feature-library"))
+    implementation(project(":feature:feature-chat"))
     implementation(libs.core.ktx)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

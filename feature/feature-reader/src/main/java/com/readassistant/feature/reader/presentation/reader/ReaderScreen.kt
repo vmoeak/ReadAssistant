@@ -1,14 +1,20 @@
 package com.readassistant.feature.reader.presentation.reader
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.readassistant.core.ui.components.SelectionToolbar
 import com.readassistant.core.ui.theme.*
+import com.readassistant.feature.chat.presentation.ChatBottomSheet
 import com.readassistant.feature.reader.presentation.renderer.WebViewReader
 import com.readassistant.feature.reader.presentation.toolbar.ReaderTopBar
 import com.readassistant.feature.reader.presentation.toolbar.SettingsPanel
@@ -31,6 +37,10 @@ fun ReaderScreen(
     val isBilingual by translationViewModel.isBilingualMode.collectAsState()
     val translations by translationViewModel.translations.collectAsState()
 
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
     Scaffold(
         topBar = {
             ReaderTopBar(
@@ -40,6 +50,7 @@ fun ReaderScreen(
                 onSettingsClick = { viewModel.toggleSettingsPanel() }
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = rc.background
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -58,8 +69,38 @@ fun ReaderScreen(
                     modifier = Modifier.fillMaxSize()
                 )
             }
-            SelectionToolbar(visible = uiState.showSelectionToolbar, onHighlight = { viewModel.addHighlight() }, onCopy = { viewModel.clearSelection() }, onNote = { viewModel.clearSelection() }, onAskAi = { viewModel.showChatSheet() }, onDismiss = { viewModel.clearSelection() }, modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp))
+            SelectionToolbar(
+                visible = uiState.showSelectionToolbar,
+                onHighlight = {
+                    viewModel.addHighlight()
+                    scope.launch { snackbarHostState.showSnackbar("Highlight saved") }
+                },
+                onCopy = {
+                    val text = uiState.textSelection?.selectedText ?: ""
+                    if (text.isNotEmpty()) {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Selected text", text))
+                    }
+                    viewModel.clearSelection()
+                    scope.launch { snackbarHostState.showSnackbar("Copied to clipboard") }
+                },
+                onNote = {
+                    viewModel.addHighlight()
+                    scope.launch { snackbarHostState.showSnackbar("Highlight saved as note") }
+                },
+                onAskAi = { viewModel.showChatSheet() },
+                onDismiss = { viewModel.clearSelection() },
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+            )
             if (uiState.showSettingsPanel) SettingsPanel(currentTheme = rtt, fontSize = fontSize, lineHeight = lineHeight, onThemeChange = { viewModel.updateTheme(it.name) }, onFontSizeChange = { viewModel.updateFontSize(it) }, onLineHeightChange = { viewModel.updateLineHeight(it) }, onDismiss = { viewModel.toggleSettingsPanel() }, modifier = Modifier.align(Alignment.BottomCenter))
         }
+    }
+
+    // Show ChatBottomSheet when Ask AI is triggered
+    if (uiState.showChatSheet) {
+        ChatBottomSheet(
+            quotedText = uiState.textSelection?.selectedText ?: "",
+            onDismiss = { viewModel.hideChatSheet() }
+        )
     }
 }

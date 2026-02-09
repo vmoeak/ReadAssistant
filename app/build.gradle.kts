@@ -1,5 +1,3 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -21,20 +19,8 @@ android {
 
     signingConfigs {
         create("release") {
-            val props = rootProject.file("keystore.properties")
-            if (props.exists()) {
-                val ks = Properties().apply { props.inputStream().use { load(it) } }
-                storeFile = file(ks["storeFile"] as String)
-                storePassword = ks["storePassword"] as String
-                keyAlias = ks["keyAlias"] as String
-                keyPassword = ks["keyPassword"] as String
-            } else if (System.getenv("KEYSTORE_BASE64") != null) {
-                val decoder = java.util.Base64.getDecoder()
-                val ksFile = layout.buildDirectory.file("release.keystore").get().asFile
-                if (!ksFile.exists()) {
-                    ksFile.parentFile?.mkdirs()
-                    ksFile.writeBytes(decoder.decode(System.getenv("KEYSTORE_BASE64")))
-                }
+            val ksFile = rootProject.file("release.keystore")
+            if (ksFile.exists()) {
                 storeFile = ksFile
                 storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
                 keyAlias = System.getenv("KEY_ALIAS") ?: ""
@@ -47,7 +33,8 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            val releaseSigning = signingConfigs.findByName("release")
+            signingConfig = if (releaseSigning?.storeFile?.exists() == true) releaseSigning else signingConfigs.getByName("debug")
         }
     }
 

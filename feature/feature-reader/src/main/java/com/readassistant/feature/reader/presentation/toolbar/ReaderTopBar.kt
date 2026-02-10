@@ -45,12 +45,12 @@ fun ReaderTopBar(
             shadowElevation = 0.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
-                .height(44.dp)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .statusBarsPadding()
+                    .height(44.dp)
                     .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Start

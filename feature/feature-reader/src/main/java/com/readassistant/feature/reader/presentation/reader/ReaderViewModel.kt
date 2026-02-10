@@ -45,8 +45,6 @@ class ReaderViewModel @Inject constructor(
             "RSS_ARTICLE" -> {
                 val a = articleDao.getArticleById(contentIdLong)
                 if (a != null) {
-                val a = articleDao.getArticleById(contentIdLong)
-                if (a != null) {
                     System.out.println("ReaderViewModel: NOTE: Loading RSS Article: ${a.title}, isRead=${a.isRead}")
                     android.util.Log.e("ReaderViewModel", "Loading RSS Article: ${a.title}, isRead=${a.isRead}")
                     val content = a.extractedContent?.ifEmpty { null } ?: a.content
@@ -57,16 +55,14 @@ class ReaderViewModel @Inject constructor(
                         feedDao.updateUnreadCount(a.feedId, unreadCount)
                         System.out.println("ReaderViewModel: NOTE: Marked read. Feed=${a.feedId}, NewCount=$unreadCount")
                         android.util.Log.e("ReaderViewModel", "Marked as read. New unread count for feed ${a.feedId}: $unreadCount")
-                        _uiState.update { it.copy(error = "Debug: Marked read. Count=$unreadCount") } // Show as error to visible in UI
                     } else {
                         System.out.println("ReaderViewModel: NOTE: Already read")
                         android.util.Log.e("ReaderViewModel", "Article already marked as read")
-                        _uiState.update { it.copy(error = "Debug: Already read") }
                     }
                 } else {
                     System.out.println("ReaderViewModel: NOTE: Article with id $contentIdLong not found")
                     android.util.Log.e("ReaderViewModel", "Article with id $contentIdLong not found")
-                    _uiState.update { it.copy(isLoading = false, error = "Debug: ID=$contentIdLong not found. Type=$contentTypeStr") }
+                    _uiState.update { it.copy(isLoading = false, error = "Article not found") }
                 }
             }
             "WEB_ARTICLE" -> {

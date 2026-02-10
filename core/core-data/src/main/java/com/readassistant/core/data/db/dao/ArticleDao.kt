@@ -36,6 +36,6 @@ interface ArticleDao {
     @Query("DELETE FROM articles WHERE feedId = :feedId")
     suspend fun deleteByFeed(feedId: Long)
 
-    @Query("SELECT COUNT(*) FROM articles WHERE feedId = :feedId AND isRead = 0")
-    suspend fun getUnreadCount(feedId: Long): Int
+    @Query("SELECT COUNT(*) FROM articles WHERE feedId = :feedId AND isRead = :isRead")
+    suspend fun getUnreadCount(feedId: Long, isRead: Boolean = false): Int
 }

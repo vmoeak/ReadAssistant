@@ -18,3 +18,4 @@ local.properties
 android-sdk/
 temp_java
 setup_android.sh
+.jdk

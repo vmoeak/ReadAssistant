@@ -4,8 +4,7 @@ import android.annotation.SuppressLint
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ActionMode
-import android.view.Menu
-import android.view.MenuItem
+import android.view.ViewConfiguration
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -38,14 +37,18 @@ fun WebViewReader(
     val css = generateReaderCss(themeType, fontSize, lineHeight, pagedMode)
     val pagedFlag = if (pagedMode) "true" else "false"
     val html = remember(htmlContent, css) {
-        """<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1.0"><style>$css</style></head><body><div id="reader-content">$htmlContent</div><div id="page-turn-overlay"></div><script>
+        """<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1.0"><style>$css</style></head><body><div id="reader-content">$htmlContent</div><div id="page-turn-overlay"><div class="back"></div><div class="sheet"></div><div class="shade"></div><div class="gloss"></div><div class="crease"></div></div><script>
 var pagedMode=$pagedFlag;
 var pageIndex=0;
 var totalPages=1;
 var pageStride=0;
 var isAnimating=false;
+var dragActive=false;
+var dragDirection=0;
+var dragProgress=0;
 var paras=document.querySelectorAll('#reader-content p,#reader-content h1,#reader-content h2,#reader-content h3,#reader-content h4,#reader-content li,#reader-content blockquote');
 paras.forEach(function(p,i){p.setAttribute('data-para-idx',i)});
+document.addEventListener('contextmenu',function(e){e.preventDefault();});
 document.addEventListener('selectionchange',function(){var s=window.getSelection();if(s&&s.toString().trim().length>0){try{var r=s.getRangeAt(0);var rect=r.getBoundingClientRect();var p=r.startContainer.parentElement;while(p&&!p.getAttribute('data-para-idx'))p=p.parentElement;Android.onTextSelected(s.toString(),r.startOffset,r.endOffset,p?parseInt(p.getAttribute('data-para-idx')):-1,rect.left,rect.top,rect.right,rect.bottom)}catch(e){}}});
 var st;window.addEventListener('scroll',function(){clearTimeout(st);st=setTimeout(function(){var t=window.pageYOffset;var h=document.documentElement.scrollHeight-window.innerHeight;Android.onScrollProgress(h>0?t/h:0)},200)});
 function extractParagraphs(){var r=[];paras.forEach(function(p,i){var t=p.textContent.trim();if(t.length>0)r.push(i+'||'+t)});Android.onParagraphsExtracted(r.join('@@SEP@@'))}
@@ -84,26 +87,169 @@ function updatePageMetrics(){
   Android.onPageChanged(pageIndex,totalPages,progress);
   emitChapters();
 }
-function runTurnAnimation(direction, onMidpoint){
-  if(!pagedMode || isAnimating) return false;
+function clamp(v,min,max){return Math.max(min,Math.min(max,v));}
+function setDragVisual(progress){
   var overlay=document.getElementById('page-turn-overlay');
   var content=document.getElementById('reader-content');
+  if(!overlay || !content) return;
+  var back=overlay.querySelector('.back');
+  var sheet=overlay.querySelector('.sheet');
+  var shade=overlay.querySelector('.shade');
+  var gloss=overlay.querySelector('.gloss');
+  var crease=overlay.querySelector('.crease');
+  if(!sheet || !shade || !gloss || !back || !crease) return;
+  var p=Math.max(0,Math.min(1,progress));
+  var eased=1-Math.pow(1-p,1.55);
+  var vw=Math.max(1,window.innerWidth);
+  var rotate=10+64*eased;
+  var skew=0.8+2.3*eased;
+  var shift=3+6*eased;
+  var ridge=Math.max(10,vw*(0.014+0.02*eased));
+  var shadeStrong=(0.16+0.24*eased);
+  var shadeSoft=(0.08+0.18*eased);
+  var glossStrong=(0.12+0.16*eased);
+  sheet.style.opacity='0.99';
+  back.style.opacity=String(0.12+0.28*eased);
+  shade.style.opacity=String(0.08+0.5*eased);
+  gloss.style.opacity=String(0.06+0.24*eased);
+  crease.style.opacity=String(0.16+0.58*eased);
+  if(dragDirection>0){
+    var foldX=clamp(vw*(1-0.94*eased),0,vw);
+    var top=clamp(foldX+ridge*0.45,0,vw);
+    var mid=clamp(foldX+ridge*1.85,0,vw);
+    var bottom=clamp(foldX+ridge*0.30,0,vw);
+    var backLeft=clamp(foldX-ridge*1.55,0,vw);
+    sheet.style.transformOrigin='right center';
+    sheet.style.transform='translateX('+(-0.9*eased)+'%) rotateY('+(-rotate)+'deg) skewY('+(-skew)+'deg)';
+    sheet.style.clipPath='polygon('+top+'px 0,100% 0,100% 100%,'+bottom+'px 100%,'+mid+'px 55%,'+mid+'px 45%)';
+    back.style.clipPath='polygon('+backLeft+'px 0,'+(top-ridge*0.28)+'px 0,'+(bottom-ridge*0.28)+'px 100%,'+backLeft+'px 100%)';
+    shade.style.background='linear-gradient(90deg,rgba(0,0,0,0) 0%,rgba(0,0,0,'+shadeSoft+') 56%,rgba(0,0,0,'+shadeStrong+') 100%)';
+    gloss.style.background='linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,'+glossStrong+') 72%,rgba(255,255,255,0.03) 100%)';
+    crease.style.left=(foldX-ridge*0.3)+'px';
+    crease.style.right='';
+    crease.style.transform='rotate(-1.4deg)';
+    content.style.transform='translateX('+(-shift)+'px)';
+  } else {
+    var foldX2=clamp(vw*(0.94*eased),0,vw);
+    var top2=clamp(foldX2-ridge*0.45,0,vw);
+    var mid2=clamp(foldX2-ridge*1.85,0,vw);
+    var bottom2=clamp(foldX2-ridge*0.30,0,vw);
+    var backRight=clamp(foldX2+ridge*1.55,0,vw);
+    sheet.style.transformOrigin='left center';
+    sheet.style.transform='translateX('+(0.9*eased)+'%) rotateY('+rotate+'deg) skewY('+skew+'deg)';
+    sheet.style.clipPath='polygon(0 0,'+top2+'px 0,'+mid2+'px 45%,'+mid2+'px 55%,'+bottom2+'px 100%,0 100%)';
+    back.style.clipPath='polygon('+(top2+ridge*0.28)+'px 0,'+backRight+'px 0,'+backRight+'px 100%,'+(bottom2+ridge*0.28)+'px 100%)';
+    shade.style.background='linear-gradient(270deg,rgba(0,0,0,0) 0%,rgba(0,0,0,'+shadeSoft+') 56%,rgba(0,0,0,'+shadeStrong+') 100%)';
+    gloss.style.background='linear-gradient(270deg,rgba(255,255,255,0) 0%,rgba(255,255,255,'+glossStrong+') 72%,rgba(255,255,255,0.03) 100%)';
+    crease.style.right=(vw-foldX2-ridge*0.3)+'px';
+    crease.style.left='';
+    crease.style.transform='rotate(1.4deg)';
+    content.style.transform='translateX('+shift+'px)';
+  }
+  overlay.style.opacity=String(Math.max(0.12, 0.2 + 0.75*eased));
+}
+function clearDragVisual(){
+  var overlay=document.getElementById('page-turn-overlay');
+  var content=document.getElementById('reader-content');
+  var body=document.body;
+  if(content) content.style.transform='';
+  if(body) body.classList.remove('dragging');
+  if(!overlay) return;
+  var back=overlay.querySelector('.back');
+  var sheet=overlay.querySelector('.sheet');
+  var shade=overlay.querySelector('.shade');
+  var gloss=overlay.querySelector('.gloss');
+  var crease=overlay.querySelector('.crease');
+  if(back){back.style.clipPath='';back.style.opacity='';}
+  if(sheet){sheet.style.transform='';sheet.style.clipPath='';}
+  if(shade){shade.style.opacity='';shade.style.background='';}
+  if(gloss){gloss.style.opacity='';gloss.style.background='';}
+  if(crease){crease.style.opacity='';crease.style.left='';crease.style.right='';crease.style.transform='';}
+  overlay.style.opacity='';
+  overlay.classList.remove('active','turn-next','turn-prev');
+}
+function animateDragTo(target,duration,done){
+  var start=dragProgress;
+  var from=performance.now();
+  function tick(now){
+    var t=Math.min(1,(now-from)/duration);
+    var e=t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+    dragProgress=start+(target-start)*e;
+    setDragVisual(dragProgress);
+    if(t<1){requestAnimationFrame(tick);}else{done();}
+  }
+  requestAnimationFrame(tick);
+}
+function beginDrag(direction){
+  if(!pagedMode || isAnimating || dragActive) return false;
+  if(direction>0 && pageIndex>=totalPages-1) return false;
+  if(direction<0 && pageIndex<=0) return false;
+  var overlay=document.getElementById('page-turn-overlay');
+  var body=document.body;
+  if(!overlay) return false;
+  dragDirection=direction>0?1:-1;
+  dragProgress=0.02;
+  dragActive=true;
+  overlay.classList.remove('turn-next','turn-prev');
+  overlay.classList.add('active',dragDirection>0?'turn-next':'turn-prev');
+  if(body) body.classList.add('dragging');
+  setDragVisual(dragProgress);
+  return true;
+}
+function updateDragProgress(value){
+  if(!dragActive) return false;
+  dragProgress=Math.max(0.02,Math.min(1,parseFloat(value)||0));
+  setDragVisual(dragProgress);
+  return true;
+}
+function endDrag(commit){
+  if(!dragActive) return false;
+  var shouldCommit=(commit===true||commit==='true') && dragProgress>0.06;
+  if(shouldCommit){
+    animateDragTo(1,180,function(){
+      if(dragDirection>0) pageIndex+=1; else pageIndex-=1;
+      dragActive=false;
+      dragDirection=0;
+      dragProgress=0;
+      clearDragVisual();
+      updatePageMetrics();
+    });
+  }else{
+    animateDragTo(0,160,function(){
+      dragActive=false;
+      dragDirection=0;
+      dragProgress=0;
+      clearDragVisual();
+    });
+  }
+  return true;
+}
+function runTurnAnimation(direction, onMidpoint){
+  if(!pagedMode || isAnimating || dragActive) return false;
+  var overlay=document.getElementById('page-turn-overlay');
+  var content=document.getElementById('reader-content');
+  var body=document.body;
   if(!overlay){
     onMidpoint();
     return true;
   }
+  var duration=460;
+  var midpoint=direction>0?236:208;
   isAnimating=true;
   overlay.classList.remove('turn-next','turn-prev','active');
-  if(content) content.classList.remove('turning-next','turning-prev');
+  if(content) content.classList.remove('turning-next','turning-prev','turning');
+  if(body) body.classList.remove('turning','turning-next','turning-prev');
   overlay.classList.add(direction>0?'turn-next':'turn-prev');
-  if(content) content.classList.add(direction>0?'turning-next':'turning-prev');
+  if(content) content.classList.add('turning', direction>0?'turning-next':'turning-prev');
+  if(body) body.classList.add('turning', direction>0?'turning-next':'turning-prev');
   requestAnimationFrame(function(){overlay.classList.add('active')});
-  setTimeout(function(){onMidpoint()},160);
+  setTimeout(function(){onMidpoint()},midpoint);
   setTimeout(function(){
     overlay.classList.remove('active','turn-next','turn-prev');
-    if(content) content.classList.remove('turning-next','turning-prev');
+    if(content) content.classList.remove('turning','turning-next','turning-prev');
+    if(body) body.classList.remove('turning','turning-next','turning-prev');
     isAnimating=false;
-  },320);
+  },duration);
   return true;
 }
 function nextPage(){
@@ -135,6 +281,14 @@ function goToProgress(v){
 }
 window.addEventListener('load',function(){setTimeout(updatePageMetrics,80)});
 window.addEventListener('resize',function(){setTimeout(updatePageMetrics,80)});
+function clearNativeSelection(){
+  try{
+    var s=window.getSelection();
+    if(s) s.removeAllRanges();
+    var ae=document.activeElement;
+    if(ae && ae.blur) ae.blur();
+  }catch(e){}
+}
 </script></body></html>"""
     }
 
@@ -178,12 +332,36 @@ window.addEventListener('resize',function(){setTimeout(updatePageMetrics,80)});
     var lastLoadedHtml by remember { mutableStateOf("") }
 
     AndroidView(factory = { ctx ->
-        WebView(ctx).apply {
+        object : WebView(ctx) {
+            override fun startActionMode(callback: ActionMode.Callback?): ActionMode? = null
+            override fun startActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? = null
+        }.apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
+            val touchSlopPx = ViewConfiguration.get(ctx).scaledTouchSlop.toFloat()
+            var dragStartX = 0f
+            var dragStartY = 0f
+            var draggingPage = false
+            var dragProgress = 0f
+            var suppressLongPress = false
+            var longPressTriggered = false
+            var pageTurnIntent = false
+            var longPressEligible = true
+            val defaultLongClickable = isLongClickable
+            setOnLongClickListener {
+                if (!pagedMode) return@setOnLongClickListener false
+                if (draggingPage || suppressLongPress || pageTurnIntent || !longPressEligible) {
+                    // Page-turn already active/intentional: block long-press popup.
+                    return@setOnLongClickListener true
+                }
+                // Long-press wins this touch sequence: prevent page turn until finger up.
+                longPressTriggered = true
+                false
+            }
             val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent): Boolean = true
 
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    evaluateJavascript("clearNativeSelection()", null)
                     onSingleTapState?.invoke()
                     return false
                 }
@@ -194,6 +372,7 @@ window.addEventListener('resize',function(){setTimeout(updatePageMetrics,80)});
                     velocityX: Float,
                     velocityY: Float
                 ): Boolean {
+                    if (longPressTriggered) return false
                     if (e1 == null) return false
                     val dx = e2.x - e1.x
                     val dy = e2.y - e1.y
@@ -212,24 +391,101 @@ window.addEventListener('resize',function(){setTimeout(updatePageMetrics,80)});
                 }
             })
             setOnTouchListener { _, event ->
-                gestureDetector.onTouchEvent(event)
-                if (pagedMode && event.action == MotionEvent.ACTION_MOVE) return@setOnTouchListener true
-                false
-            }
-            val actionModeCallback = object : ActionMode.Callback {
-                override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean { menu?.clear(); return false }
-                override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean { menu?.clear(); return false }
-                override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean = false
-                override fun onDestroyActionMode(mode: ActionMode?) {}
-            }
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                try {
-                    val viewClass = android.view.View::class.java
-                    val setSelectionMethod = viewClass.getMethod("setCustomSelectionActionModeCallback", android.view.ActionMode.Callback::class.java)
-                    setSelectionMethod.invoke(this, actionModeCallback)
-                    val setInsertionMethod = viewClass.getMethod("setCustomInsertionActionModeCallback", android.view.ActionMode.Callback::class.java)
-                    setInsertionMethod.invoke(this, actionModeCallback)
-                } catch (_: Exception) {}
+                if (!pagedMode) {
+                    gestureDetector.onTouchEvent(event)
+                    return@setOnTouchListener false
+                }
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        dragStartX = event.x
+                        dragStartY = event.y
+                        draggingPage = false
+                        dragProgress = 0f
+                        suppressLongPress = false
+                        longPressTriggered = false
+                        pageTurnIntent = false
+                        longPressEligible = true
+                        isLongClickable = defaultLongClickable
+                        gestureDetector.onTouchEvent(event)
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (longPressTriggered) return@setOnTouchListener false
+                        val dx = event.x - dragStartX
+                        val dy = event.y - dragStartY
+                        val absDx = kotlin.math.abs(dx)
+                        val absDy = kotlin.math.abs(dy)
+                        val movedEnough = absDx > touchSlopPx * 0.35f || absDy > touchSlopPx * 0.35f
+                        if (movedEnough && longPressEligible) {
+                            longPressEligible = false
+                            suppressLongPress = true
+                            isLongClickable = false
+                            cancelLongPress()
+                        }
+                        val horizontalIntent = absDx > touchSlopPx * 0.45f && absDx > absDy * 1.05f
+
+                        // Cancel long-press as soon as horizontal page-turn intent appears,
+                        // even before we fully enter dragging state.
+                        if (horizontalIntent) {
+                            if (!pageTurnIntent) {
+                                pageTurnIntent = true
+                                evaluateJavascript("clearNativeSelection()", null)
+                            }
+                            if (!suppressLongPress) {
+                                suppressLongPress = true
+                                isLongClickable = false
+                                cancelLongPress()
+                            }
+                        }
+
+                        if (!draggingPage) {
+                            val horizontalEnough = absDx > touchSlopPx * 1.1f && absDx > absDy * 1.1f
+                            if (horizontalEnough) {
+                                val direction = if (dx < 0f) 1 else -1
+                                evaluateJavascript("beginDrag($direction)", null)
+                                // This touch sequence is page-turn intent; prevent long-press popup.
+                                suppressLongPress = true
+                                cancelLongPress()
+                                draggingPage = true
+                            }
+                        }
+                        if (draggingPage) {
+                            val w = width.coerceAtLeast(1).toFloat()
+                            dragProgress = (kotlin.math.abs(dx) / (w * 0.92f)).coerceIn(0f, 1f)
+                            evaluateJavascript("updateDragProgress($dragProgress)", null)
+                            true
+                        } else if (pageTurnIntent) {
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val tappedOrFling = if (draggingPage || pageTurnIntent) false else gestureDetector.onTouchEvent(event)
+                        if (draggingPage) {
+                            val shouldCommit = dragProgress > 0.34f
+                            evaluateJavascript("endDrag(${if (shouldCommit) "true" else "false"})", null)
+                            draggingPage = false
+                            suppressLongPress = false
+                            longPressTriggered = false
+                            pageTurnIntent = false
+                            longPressEligible = false
+                            isLongClickable = defaultLongClickable
+                            true
+                        } else {
+                            suppressLongPress = false
+                            longPressTriggered = false
+                            pageTurnIntent = false
+                            longPressEligible = false
+                            isLongClickable = defaultLongClickable
+                            tappedOrFling
+                        }
+                    }
+                    else -> {
+                        gestureDetector.onTouchEvent(event)
+                        false
+                    }
+                }
             }
             addJavascriptInterface(object {
                 @JavascriptInterface fun onTextSelected(text: String, s: Int, e: Int, p: Int, l: Float, t: Float, r: Float, b: Float) { onTextSelected(TextSelection(text, s, e, p, SelectionRect(l, t, r, b))) }
@@ -268,13 +524,78 @@ window.addEventListener('resize',function(){setTimeout(updatePageMetrics,80)});
 
 fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float, pagedMode: Boolean = false): String {
     val (bg, fg, link) = when (t) { ReadingThemeType.LIGHT -> Triple("#FFF","#1A1A1A","#4A90D9"); ReadingThemeType.SEPIA -> Triple("#FBF0D9","#3E2723","#8D6E63"); ReadingThemeType.DARK -> Triple("#1A1A2E","#E8E8E8","#64B5F6") }
+    val curlHighlight = if (t == ReadingThemeType.DARK) "rgba(255,255,255,0.24)" else "rgba(255,255,255,0.82)"
+    val curlShadowStrong = if (t == ReadingThemeType.DARK) "rgba(0,0,0,0.58)" else "rgba(0,0,0,0.28)"
+    val curlShadowSoft = if (t == ReadingThemeType.DARK) "rgba(0,0,0,0.34)" else "rgba(0,0,0,0.16)"
     val bodyRule = if (pagedMode) {
         "padding:12px 24px 8px 24px;margin:0;max-width:none;overflow:hidden;height:100vh;"
     } else {
         "padding:16px 24px;margin:0 auto;max-width:720px;"
     }
     val pagedReaderRule = if (pagedMode) {
-        "#reader-content{height:100%;width:100%;column-width:calc(100vw - 48px);column-gap:24px;column-fill:auto;overflow:hidden;transition:transform 220ms cubic-bezier(0.22,0.61,0.36,1);}#reader-content>*{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;}#reader-content{overflow-wrap:anywhere;word-break:break-word;}#reader-content.turning-next{animation:contentTurnNext 320ms cubic-bezier(0.22,0.61,0.36,1);}#reader-content.turning-prev{animation:contentTurnPrev 320ms cubic-bezier(0.22,0.61,0.36,1);}#page-turn-overlay{position:fixed;top:0;bottom:0;width:52vw;pointer-events:none;opacity:0;z-index:999;transform-style:preserve-3d;backface-visibility:hidden;}#page-turn-overlay.active{opacity:1;}#page-turn-overlay.turn-next{right:0;transform-origin:right center;}#page-turn-overlay.turn-prev{left:0;transform-origin:left center;}#page-turn-overlay.turn-next.active{animation:pageCurlNext 320ms cubic-bezier(0.2,0.65,0.3,1) forwards;}#page-turn-overlay.turn-prev.active{animation:pageCurlPrev 320ms cubic-bezier(0.2,0.65,0.3,1) forwards;}@keyframes contentTurnNext{0%{transform:translateX(0);}40%{transform:translateX(-8px);}100%{transform:translateX(0);}}@keyframes contentTurnPrev{0%{transform:translateX(0);}40%{transform:translateX(8px);}100%{transform:translateX(0);}}@keyframes pageCurlNext{0%{transform:perspective(1200px) rotateY(0deg);background:linear-gradient(90deg,rgba(255,255,255,0.00) 5%,rgba(255,255,255,0.22) 32%,rgba(0,0,0,0.14) 78%,rgba(0,0,0,0.28) 100%);}60%{transform:perspective(1200px) rotateY(-24deg);background:linear-gradient(90deg,rgba(255,255,255,0.00) 2%,rgba(255,255,255,0.26) 24%,rgba(0,0,0,0.16) 70%,rgba(0,0,0,0.30) 100%);}100%{transform:perspective(1200px) rotateY(-52deg);background:linear-gradient(90deg,rgba(255,255,255,0.00) 0%,rgba(255,255,255,0.08) 14%,rgba(0,0,0,0.06) 62%,rgba(0,0,0,0.20) 100%);}}@keyframes pageCurlPrev{0%{transform:perspective(1200px) rotateY(0deg);background:linear-gradient(270deg,rgba(255,255,255,0.00) 5%,rgba(255,255,255,0.22) 32%,rgba(0,0,0,0.14) 78%,rgba(0,0,0,0.28) 100%);}60%{transform:perspective(1200px) rotateY(24deg);background:linear-gradient(270deg,rgba(255,255,255,0.00) 2%,rgba(255,255,255,0.26) 24%,rgba(0,0,0,0.16) 70%,rgba(0,0,0,0.30) 100%);}100%{transform:perspective(1200px) rotateY(52deg);background:linear-gradient(270deg,rgba(255,255,255,0.00) 0%,rgba(255,255,255,0.08) 14%,rgba(0,0,0,0.06) 62%,rgba(0,0,0,0.20) 100%);}}"
+        """
+        #reader-content{height:100%;width:100%;column-width:calc(100vw - 48px);column-gap:24px;column-fill:auto;overflow:hidden;overflow-wrap:anywhere;word-break:break-word;transform-origin:center center;will-change:transform;backface-visibility:hidden;}
+        #reader-content>*{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;}
+        body.turning #reader-content{filter:brightness(0.992);}
+        body.dragging,body.dragging *{-webkit-user-select:none !important;user-select:none !important;-webkit-touch-callout:none !important;}
+        #reader-content.turning-next{animation:contentTurnNext 460ms cubic-bezier(0.23,0.72,0.26,1);}
+        #reader-content.turning-prev{animation:contentTurnPrev 460ms cubic-bezier(0.23,0.72,0.26,1);}
+        #page-turn-overlay{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:999;transform-style:preserve-3d;backface-visibility:hidden;perspective:2200px;overflow:hidden;will-change:opacity;}
+        #page-turn-overlay.active{opacity:1;}
+        #page-turn-overlay.turn-next{transform-origin:right center;}
+        #page-turn-overlay.turn-prev{transform-origin:left center;}
+        #page-turn-overlay .back,#page-turn-overlay .sheet,#page-turn-overlay .shade,#page-turn-overlay .gloss{
+          position:absolute;inset:0;opacity:0;backface-visibility:hidden;will-change:transform,clip-path,opacity;
+        }
+        #page-turn-overlay .sheet{
+          background:$bg;opacity:0.99;box-shadow:0 0 0 1px rgba(255,255,255,0.06) inset;
+        }
+        #page-turn-overlay.turn-next .sheet{
+          background:linear-gradient(90deg,$bg 0%,$curlHighlight 24%,$bg 58%,$curlShadowSoft 100%);
+        }
+        #page-turn-overlay.turn-prev .sheet{
+          background:linear-gradient(270deg,$bg 0%,$curlHighlight 24%,$bg 58%,$curlShadowSoft 100%);
+        }
+        #page-turn-overlay .back{
+          background:linear-gradient(90deg,rgba(0,0,0,0.05) 0%,rgba(255,255,255,0.24) 52%,rgba(0,0,0,0.14) 100%);
+          mix-blend-mode:multiply;
+        }
+        #page-turn-overlay.turn-prev .back{
+          background:linear-gradient(270deg,rgba(0,0,0,0.05) 0%,rgba(255,255,255,0.24) 52%,rgba(0,0,0,0.14) 100%);
+        }
+        #page-turn-overlay .shade{opacity:0;}
+        #page-turn-overlay .gloss{opacity:0;mix-blend-mode:screen;}
+        #page-turn-overlay .crease{
+          position:absolute;top:0;bottom:0;width:2px;opacity:0;
+          background:linear-gradient(180deg,rgba(255,255,255,0.78) 0%,rgba(255,255,255,0.06) 48%,rgba(0,0,0,0.3) 100%);
+          filter:blur(0.7px);
+          will-change:left,right,opacity,transform;
+        }
+        #page-turn-overlay.turn-next.active .sheet{animation:pageSheetNext 460ms cubic-bezier(0.18,0.70,0.24,1) forwards;}
+        #page-turn-overlay.turn-prev.active .sheet{animation:pageSheetPrev 460ms cubic-bezier(0.18,0.70,0.24,1) forwards;}
+        #page-turn-overlay.turn-next.active .shade{animation:pageShadeNext 460ms ease-out forwards;}
+        #page-turn-overlay.turn-prev.active .shade{animation:pageShadePrev 460ms ease-out forwards;}
+        #page-turn-overlay.turn-next.active .gloss{animation:pageGlossNext 460ms ease-out forwards;}
+        #page-turn-overlay.turn-prev.active .gloss{animation:pageGlossPrev 460ms ease-out forwards;}
+        @keyframes contentTurnNext{0%{transform:translateX(0);}30%{transform:translateX(-3px);}58%{transform:translateX(-5px);}100%{transform:translateX(0);}}
+        @keyframes contentTurnPrev{0%{transform:translateX(0);}30%{transform:translateX(3px);}58%{transform:translateX(5px);}100%{transform:translateX(0);}}
+        @keyframes pageSheetNext{
+          0%{transform:translateX(0) rotateY(0deg) skewY(0deg);clip-path:polygon(100% 0,100% 0,100% 100%,100% 100%);}
+          36%{transform:translateX(1%) rotateY(-18deg) skewY(-0.8deg);clip-path:polygon(28% 0,100% 0,100% 100%,28% 100%);}
+          70%{transform:translateX(-3%) rotateY(-44deg) skewY(-1.8deg);clip-path:polygon(8% 0,94% 0,94% 100%,8% 100%);}
+          100%{transform:translateX(-7%) rotateY(-66deg) skewY(-2.2deg);clip-path:polygon(0 0,82% 0,82% 100%,0 100%);}
+        }
+        @keyframes pageSheetPrev{
+          0%{transform:translateX(0) rotateY(0deg) skewY(0deg);clip-path:polygon(0 0,0 0,0 100%,0 100%);}
+          36%{transform:translateX(-1%) rotateY(18deg) skewY(0.8deg);clip-path:polygon(0 0,72% 0,72% 100%,0 100%);}
+          70%{transform:translateX(3%) rotateY(44deg) skewY(1.8deg);clip-path:polygon(6% 0,92% 0,92% 100%,6% 100%);}
+          100%{transform:translateX(7%) rotateY(66deg) skewY(2.2deg);clip-path:polygon(18% 0,100% 0,100% 100%,18% 100%);}
+        }
+        @keyframes pageShadeNext{0%{opacity:0.02;}36%{opacity:0.20;}72%{opacity:0.34;}100%{opacity:0.08;}}
+        @keyframes pageShadePrev{0%{opacity:0.02;}36%{opacity:0.22;}72%{opacity:0.36;}100%{opacity:0.08;}}
+        @keyframes pageGlossNext{0%{opacity:0.03;}42%{opacity:0.18;}100%{opacity:0;}}
+        @keyframes pageGlossPrev{0%{opacity:0.03;}42%{opacity:0.18;}100%{opacity:0;}}
+        """
     } else {
         ""
     }

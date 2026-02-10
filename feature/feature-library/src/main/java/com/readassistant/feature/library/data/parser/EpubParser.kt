@@ -1,6 +1,8 @@
 package com.readassistant.feature.library.data.parser
 
 import org.jsoup.Jsoup
+import java.util.Base64
+import java.util.Locale
 import java.util.zip.ZipFile
 
 class EpubParser : BookParser {
@@ -69,7 +71,23 @@ class EpubParser : BookParser {
             val htmlParts = targetEntries.mapNotNull { entryPath ->
                 val entry = zip.getEntry(entryPath) ?: return@mapNotNull null
                 val raw = zip.getInputStream(entry).bufferedReader().use { it.readText() }
-                val body = Jsoup.parse(raw).apply { select("script,style,iframe").remove() }.body()?.html().orEmpty().trim()
+                val doc = Jsoup.parse(raw)
+                doc.select("script,style,iframe").remove()
+
+                val entryDir = entryPath.substringBeforeLast("/", missingDelimiterValue = "")
+                doc.select("img[src]").forEach { img ->
+                    val src = img.attr("src").trim()
+                    if (src.isBlank() || src.startsWith("data:", ignoreCase = true)) return@forEach
+                    val normalizedPath = resolveEpubPath(entryDir, src) ?: return@forEach
+                    val imageEntry = zip.getEntry(normalizedPath) ?: return@forEach
+                    val bytes = zip.getInputStream(imageEntry).use { it.readBytes() }
+                    if (bytes.isEmpty()) return@forEach
+                    val mimeType = detectMimeType(normalizedPath)
+                    val base64 = Base64.getEncoder().encodeToString(bytes)
+                    img.attr("src", "data:$mimeType;base64,$base64")
+                }
+
+                val body = doc.body()?.html().orEmpty().trim()
                 if (body.isBlank()) null else "<section>$body</section>"
             }
 
@@ -77,6 +95,34 @@ class EpubParser : BookParser {
             if (htmlParts.isEmpty()) "<p>No readable EPUB content found.</p>" else htmlParts.joinToString("\n")
         } catch (_: Exception) {
             "<p>Error reading EPUB.</p>"
+        }
+    }
+
+    private fun resolveEpubPath(currentDir: String, relativePath: String): String? {
+        if (relativePath.startsWith("http://", true) || relativePath.startsWith("https://", true)) return null
+        if (relativePath.startsWith("/")) return relativePath.trimStart('/')
+        val raw = if (currentDir.isBlank()) relativePath else "$currentDir/$relativePath"
+        val parts = mutableListOf<String>()
+        raw.split('/').forEach { segment ->
+            when {
+                segment.isBlank() || segment == "." -> Unit
+                segment == ".." -> if (parts.isNotEmpty()) parts.removeAt(parts.size - 1)
+                else -> parts.add(segment)
+            }
+        }
+        return if (parts.isEmpty()) null else parts.joinToString("/")
+    }
+
+    private fun detectMimeType(path: String): String {
+        return when (path.substringAfterLast('.', "").lowercase(Locale.US)) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "bmp" -> "image/bmp"
+            "svg" -> "image/svg+xml"
+            "avif" -> "image/avif"
+            else -> "application/octet-stream"
         }
     }
 }

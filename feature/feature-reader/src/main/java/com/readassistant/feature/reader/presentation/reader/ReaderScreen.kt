@@ -13,20 +13,24 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlin.math.roundToInt
 import com.readassistant.core.domain.model.ContentType
+import com.readassistant.core.domain.model.SelectionRect
 import com.readassistant.core.ui.components.SelectionToolbar
 import com.readassistant.core.ui.theme.*
 import com.readassistant.feature.chat.presentation.ChatBottomSheet
@@ -64,7 +68,11 @@ fun ReaderScreen(
     var seekProgress by remember { mutableStateOf<Float?>(null) }
     var sliderValue by remember { mutableStateOf(0f) }
     var sliderDragging by remember { mutableStateOf(false) }
+    var lastSelectionRect by remember { mutableStateOf<SelectionRect?>(null) }
     val isBook = isBookContentType(uiState.contentType)
+    LaunchedEffect(uiState.textSelection?.rect) {
+        uiState.textSelection?.rect?.let { lastSelectionRect = it }
+    }
     LaunchedEffect(uiState.progressPercent, sliderDragging) {
         if (!sliderDragging) sliderValue = uiState.progressPercent.coerceIn(0f, 1f)
     }
@@ -107,7 +115,13 @@ fun ReaderScreen(
                     seekCommandId = seekCommandId,
                     seekPage = seekPage,
                     seekProgress = seekProgress,
-                    onSingleTap = { showTopBar = !showTopBar },
+                    onSingleTap = {
+                        if (uiState.showSelectionToolbar) {
+                            viewModel.clearSelection()
+                        } else {
+                            showTopBar = !showTopBar
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
@@ -135,25 +149,34 @@ fun ReaderScreen(
             }
             if (isBook && showTopBar) {
                 Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-                    shape = MaterialTheme.shapes.medium,
+                    color = rc.background,
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(start = 10.dp, end = 10.dp, bottom = 34.dp)
+                        .padding(start = 4.dp, end = 4.dp, bottom = 6.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "${(sliderValue * 100f).roundToInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .clickable(onClick = { showChaptersList = true }),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.List,
+                                contentDescription = "Chapters",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                         Slider(
                             value = sliderValue,
                             onValueChange = {
@@ -161,13 +184,26 @@ fun ReaderScreen(
                                 sliderValue = it.coerceIn(0f, 1f)
                             },
                             valueRange = 0f..1f,
-                            modifier = Modifier.width(210.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 8.dp),
                             onValueChangeFinished = {
                                 sliderDragging = false
                                 seekPage = null
                                 seekProgress = sliderValue
                                 seekCommandId += 1
-                            }
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = rc.onBackground.copy(alpha = 0.9f),
+                                activeTrackColor = rc.onBackground.copy(alpha = 0.55f),
+                                inactiveTrackColor = rc.onBackground.copy(alpha = 0.22f)
+                            )
+                        )
+                        Text(
+                            text = "${(sliderValue * 100f).roundToInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp)
                         )
                     }
                 }
@@ -207,8 +243,8 @@ fun ReaderScreen(
                 },
                 onAskAi = { viewModel.showChatSheet() },
                 onDismiss = { viewModel.clearSelection() },
-                modifier = if (uiState.textSelection?.rect != null) {
-                    val rect = uiState.textSelection!!.rect!!
+                modifier = if ((uiState.textSelection?.rect ?: lastSelectionRect) != null) {
+                    val rect = uiState.textSelection?.rect ?: lastSelectionRect!!
                     val density = LocalDensity.current
                     Modifier.layout { measurable, constraints ->
                         val placeable = measurable.measure(constraints)

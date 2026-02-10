@@ -3,6 +3,7 @@ package com.readassistant.feature.reader.presentation.reader
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,8 +22,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import kotlin.math.roundToInt
 import com.readassistant.core.domain.model.ContentType
 import com.readassistant.core.ui.components.SelectionToolbar
 import com.readassistant.core.ui.theme.*
@@ -54,7 +57,25 @@ fun ReaderScreen(
     val scope = rememberCoroutineScope()
     var showNoteDialog by remember { mutableStateOf(false) }
     var showNotesList by remember { mutableStateOf(false) }
+    var showChaptersList by remember { mutableStateOf(false) }
     var showTopBar by remember { mutableStateOf(false) }
+    var seekCommandId by remember { mutableStateOf(0) }
+    var seekPage by remember { mutableStateOf<Int?>(null) }
+    var seekProgress by remember { mutableStateOf<Float?>(null) }
+    var sliderValue by remember { mutableStateOf(0f) }
+    var sliderDragging by remember { mutableStateOf(false) }
+    val isBook = isBookContentType(uiState.contentType)
+    LaunchedEffect(uiState.progressPercent, sliderDragging) {
+        if (!sliderDragging) sliderValue = uiState.progressPercent.coerceIn(0f, 1f)
+    }
+    val progressLabel = if (isBook) {
+        val percent = (uiState.progressPercent * 100f).coerceIn(0f, 100f).roundToInt()
+        if (uiState.totalChapters > 1) {
+            "${uiState.currentChapterIndex + 1} / ${uiState.totalChapters}  $percent%"
+        } else {
+            "$percent%"
+        }
+    } else null
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -75,10 +96,21 @@ fun ReaderScreen(
                         translationViewModel.translateParagraphs(paragraphs)
                     },
                     pagedMode = isBookContentType(uiState.contentType),
-                    onSwipeLeft = if (isBookContentType(uiState.contentType) && uiState.totalChapters > 1) ({ viewModel.nextBookPage() }) else null,
-                    onSwipeRight = if (isBookContentType(uiState.contentType) && uiState.totalChapters > 1) ({ viewModel.prevBookPage() }) else null,
+                    onSwipeLeft = null,
+                    onSwipeRight = null,
+                    onPageChanged = if (isBookContentType(uiState.contentType)) ({ currentPage, totalPages, progress ->
+                        viewModel.onBookPageChanged(currentPage, totalPages, progress)
+                    }) else null,
+                    onChaptersExtracted = if (isBookContentType(uiState.contentType)) ({ chapters ->
+                        viewModel.onChaptersExtracted(chapters.map { ReaderChapter(it.first, it.second) })
+                    }) else null,
+                    seekCommandId = seekCommandId,
+                    seekPage = seekPage,
+                    seekProgress = seekProgress,
                     onSingleTap = { showTopBar = !showTopBar },
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
                 )
             }
             AnimatedVisibility(
@@ -94,11 +126,70 @@ fun ReaderScreen(
                     isBilingualMode = isBilingual,
                     onToggleTranslation = { translationViewModel.toggleBilingualMode() },
                     onSettingsClick = { viewModel.toggleSettingsPanel() },
-                    onNotesClick = { showNotesList = true },
-                    progressText = if (isBookContentType(uiState.contentType) && uiState.totalChapters > 1) {
-                        "${uiState.currentChapterIndex + 1} / ${uiState.totalChapters}"
-                    } else null
+                    onNotesClick = {
+                        if (isBook) showChaptersList = true else showNotesList = true
+                    },
+                    progressText = null,
+                    backgroundColor = rc.background
                 )
+            }
+            if (isBook && showTopBar) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(start = 10.dp, end = 10.dp, bottom = 34.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${(sliderValue * 100f).roundToInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Slider(
+                            value = sliderValue,
+                            onValueChange = {
+                                sliderDragging = true
+                                sliderValue = it.coerceIn(0f, 1f)
+                            },
+                            valueRange = 0f..1f,
+                            modifier = Modifier.width(210.dp),
+                            onValueChangeFinished = {
+                                sliderDragging = false
+                                seekPage = null
+                                seekProgress = sliderValue
+                                seekCommandId += 1
+                            }
+                        )
+                    }
+                }
+            }
+            if (!progressLabel.isNullOrBlank()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                    shape = MaterialTheme.shapes.small,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = 10.dp, bottom = 6.dp)
+                ) {
+                    Text(
+                        text = progressLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
             SelectionToolbar(
                 visible = uiState.showSelectionToolbar,
@@ -208,6 +299,32 @@ fun ReaderScreen(
                     }
                 }
                 if (uiState.notes.isEmpty()) item { Text("No notes yet.") }
+            }
+        }
+    }
+    if (showChaptersList) {
+        ModalBottomSheet(onDismissRequest = { showChaptersList = false }) {
+            Text("Chapters", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
+            LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+                if (uiState.chapters.isEmpty()) {
+                    item { Text("No chapter headings found.", modifier = Modifier.padding(vertical = 12.dp)) }
+                } else {
+                    items(uiState.chapters) { chapter ->
+                        ListItem(
+                            headlineContent = { Text(chapter.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            supportingContent = { Text("Page ${chapter.pageIndex + 1}") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    seekProgress = null
+                                    seekPage = chapter.pageIndex
+                                    seekCommandId += 1
+                                    showChaptersList = false
+                                }
+                        )
+                        HorizontalDivider()
+                    }
+                }
             }
         }
     }

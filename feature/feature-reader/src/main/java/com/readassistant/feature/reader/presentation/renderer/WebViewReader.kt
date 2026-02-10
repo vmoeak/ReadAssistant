@@ -1,6 +1,9 @@
 package com.readassistant.feature.reader.presentation.renderer
 
 import android.annotation.SuppressLint
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -61,6 +64,21 @@ function removeAllTranslations(){document.querySelectorAll('.translation').forEa
     AndroidView(factory = { ctx ->
         WebView(ctx).apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
+            val actionModeCallback = object : ActionMode.Callback {
+                override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean { menu?.clear(); return false }
+                override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean { menu?.clear(); return false }
+                override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean = false
+                override fun onDestroyActionMode(mode: ActionMode?) {}
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                try {
+                    val viewClass = android.view.View::class.java
+                    val setSelectionMethod = viewClass.getMethod("setCustomSelectionActionModeCallback", android.view.ActionMode.Callback::class.java)
+                    setSelectionMethod.invoke(this, actionModeCallback)
+                    val setInsertionMethod = viewClass.getMethod("setCustomInsertionActionModeCallback", android.view.ActionMode.Callback::class.java)
+                    setInsertionMethod.invoke(this, actionModeCallback)
+                } catch (_: Exception) {}
+            }
             addJavascriptInterface(object {
                 @JavascriptInterface fun onTextSelected(text: String, s: Int, e: Int, p: Int, l: Float, t: Float, r: Float, b: Float) { onTextSelected(TextSelection(text, s, e, p, SelectionRect(l, t, r, b))) }
                 @JavascriptInterface fun onScrollProgress(p: Float) { onProgressChanged(p) }

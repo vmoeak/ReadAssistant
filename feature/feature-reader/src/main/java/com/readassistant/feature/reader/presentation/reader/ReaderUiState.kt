@@ -8,5 +8,6 @@ data class ReaderUiState(
     val contentType: ContentType = ContentType.RSS_ARTICLE, val contentId: Long = 0,
     val currentChapterIndex: Int = 0, val totalChapters: Int = 0, val progressPercent: Float = 0f,
     val textSelection: TextSelection? = null, val showSelectionToolbar: Boolean = false,
-    val showSettingsPanel: Boolean = false, val showChatSheet: Boolean = false, val isBilingualMode: Boolean = false, val error: String? = null
+    val showSettingsPanel: Boolean = false, val showChatSheet: Boolean = false, val isBilingualMode: Boolean = false, val error: String? = null,
+    val notes: List<com.readassistant.core.data.db.entity.NoteWithHighlight> = emptyList()
 )

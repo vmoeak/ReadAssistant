@@ -17,7 +17,6 @@ fun SelectionToolbar(
     visible: Boolean,
     onHighlight: () -> Unit,
     onCopy: () -> Unit,
-    onNote: () -> Unit,
     onAskAi: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -34,16 +33,13 @@ fun SelectionToolbar(
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 IconButton(onClick = onHighlight) {
-                    Icon(Icons.Default.Edit, contentDescription = "Highlight")
+                    Icon(Icons.Default.Edit, contentDescription = "Note")
                 }
                 IconButton(onClick = onCopy) {
-                    Icon(Icons.Default.Share, contentDescription = "Copy")
-                }
-                IconButton(onClick = onNote) {
-                    Icon(Icons.Default.Create, contentDescription = "Note")
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
                 }
                 IconButton(onClick = onAskAi) {
-                    Icon(Icons.Default.Info, contentDescription = "Ask AI")
+                    Icon(Icons.Default.AutoAwesome, contentDescription = "Ask AI")
                 }
             }
         }

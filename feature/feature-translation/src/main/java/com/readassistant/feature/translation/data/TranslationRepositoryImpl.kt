@@ -18,7 +18,11 @@ class TranslationRepositoryImpl @Inject constructor(private val translationServi
         val hash = MessageDigest.getInstance("SHA-256").digest(text.trim().lowercase().toByteArray()).joinToString("") { "%02x".format(it) }
         val cached = cacheDao.getCachedTranslation(hash, src, tgt)
         if (cached != null) { emit(TranslationPair(idx, text, cached.translatedText, true, true)); return@flow }
-        val config = llmService.getDefaultConfig() ?: return@flow
+        val config = llmService.getDefaultConfig()
+        if (config == null) {
+            android.util.Log.w("ReadAssistant", "Translation failed: No default LLM provider configured")
+            return@flow
+        }
         var acc = ""
         translationService.streamTranslation(text, src, tgt, config).collect { chunk -> when (chunk) {
             is LlmStreamChunk.Delta -> { acc += chunk.text; emit(TranslationPair(idx, text, acc, false)) }

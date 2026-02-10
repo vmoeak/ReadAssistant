@@ -22,7 +22,8 @@ import javax.inject.Inject
 class ReaderViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle, private val articleDao: ArticleDao, private val bookDao: BookDao,
     private val webArticleDao: WebArticleDao, private val readingProgressDao: ReadingProgressDao,
-    private val highlightDao: HighlightDao, private val userPreferences: UserPreferences,
+    private val highlightDao: HighlightDao, private val noteDao: NoteDao, private val feedDao: FeedDao,
+    private val userPreferences: UserPreferences,
     private val bookParserFactory: BookParserFactory
 ) : ViewModel() {
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
@@ -31,7 +32,12 @@ class ReaderViewModel @Inject constructor(
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
     val themeType = userPreferences.themeType; val fontSize = userPreferences.fontSize; val lineHeight = userPreferences.lineHeight
 
-    init { loadContent() }
+    init {
+        loadContent()
+        viewModelScope.launch {
+            noteDao.getNotesByContent(contentTypeStr, contentIdLong).collect { n -> _uiState.update { it.copy(notes = n) } }
+        }
+    }
 
     private fun loadContent() { viewModelScope.launch {
         _uiState.update { it.copy(isLoading = true) }
@@ -39,10 +45,28 @@ class ReaderViewModel @Inject constructor(
             "RSS_ARTICLE" -> {
                 val a = articleDao.getArticleById(contentIdLong)
                 if (a != null) {
+                val a = articleDao.getArticleById(contentIdLong)
+                if (a != null) {
+                    System.out.println("ReaderViewModel: NOTE: Loading RSS Article: ${a.title}, isRead=${a.isRead}")
+                    android.util.Log.e("ReaderViewModel", "Loading RSS Article: ${a.title}, isRead=${a.isRead}")
                     val content = a.extractedContent?.ifEmpty { null } ?: a.content
                     _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = content, contentType = ContentType.RSS_ARTICLE, contentId = contentIdLong) }
+                    if (!a.isRead) {
+                        articleDao.updateReadStatus(contentIdLong, true)
+                        val unreadCount = articleDao.getUnreadCount(a.feedId)
+                        feedDao.updateUnreadCount(a.feedId, unreadCount)
+                        System.out.println("ReaderViewModel: NOTE: Marked read. Feed=${a.feedId}, NewCount=$unreadCount")
+                        android.util.Log.e("ReaderViewModel", "Marked as read. New unread count for feed ${a.feedId}: $unreadCount")
+                        _uiState.update { it.copy(error = "Debug: Marked read. Count=$unreadCount") } // Show as error to visible in UI
+                    } else {
+                        System.out.println("ReaderViewModel: NOTE: Already read")
+                        android.util.Log.e("ReaderViewModel", "Article already marked as read")
+                        _uiState.update { it.copy(error = "Debug: Already read") }
+                    }
                 } else {
-                    _uiState.update { it.copy(isLoading = false, error = "Article not found") }
+                    System.out.println("ReaderViewModel: NOTE: Article with id $contentIdLong not found")
+                    android.util.Log.e("ReaderViewModel", "Article with id $contentIdLong not found")
+                    _uiState.update { it.copy(isLoading = false, error = "Debug: ID=$contentIdLong not found. Type=$contentTypeStr") }
                 }
             }
             "WEB_ARTICLE" -> {
@@ -77,6 +101,17 @@ class ReaderViewModel @Inject constructor(
     fun onTextSelected(sel: TextSelection) { _uiState.update { it.copy(textSelection = sel, showSelectionToolbar = true) } }
     fun clearSelection() { _uiState.update { it.copy(textSelection = null, showSelectionToolbar = false) } }
     fun addHighlight(color: String = "YELLOW") { val sel = _uiState.value.textSelection ?: return; viewModelScope.launch { highlightDao.insert(HighlightEntity(contentType = _uiState.value.contentType.name, contentId = _uiState.value.contentId, selectedText = sel.selectedText, color = color, paragraphIndex = sel.paragraphIndex)); clearSelection() } }
+    fun addNote(text: String, color: String = "YELLOW") {
+        val sel = _uiState.value.textSelection ?: return
+        viewModelScope.launch {
+            val hid = highlightDao.insert(HighlightEntity(contentType = _uiState.value.contentType.name, contentId = _uiState.value.contentId, selectedText = sel.selectedText, color = color, paragraphIndex = sel.paragraphIndex))
+            noteDao.insert(com.readassistant.core.data.db.entity.NoteEntity(highlightId = hid, contentType = _uiState.value.contentType.name, contentId = _uiState.value.contentId, noteText = text))
+            clearSelection()
+        }
+    }
+    fun deleteNote(note: com.readassistant.core.data.db.entity.NoteWithHighlight) {
+        viewModelScope.launch { noteDao.delete(note.note) }
+    }
     fun toggleSettingsPanel() { _uiState.update { it.copy(showSettingsPanel = !it.showSettingsPanel) } }
     fun toggleBilingualMode() { _uiState.update { it.copy(isBilingualMode = !it.isBilingualMode) } }
     fun showChatSheet() { _uiState.update { it.copy(showChatSheet = true) } }

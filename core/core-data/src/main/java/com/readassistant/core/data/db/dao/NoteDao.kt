@@ -9,8 +9,9 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE highlightId = :highlightId")
     fun getNotesByHighlight(highlightId: Long): Flow<List<NoteEntity>>
 
+    @Transaction
     @Query("SELECT * FROM notes WHERE contentType = :type AND contentId = :id ORDER BY createdAt DESC")
-    fun getNotesByContent(type: String, id: Long): Flow<List<NoteEntity>>
+    fun getNotesByContent(type: String, id: Long): Flow<List<com.readassistant.core.data.db.entity.NoteWithHighlight>>
 
     @Insert
     suspend fun insert(note: NoteEntity): Long

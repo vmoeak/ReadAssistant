@@ -43,7 +43,14 @@ class RssRepositoryImpl @Inject constructor(
     }
 
     suspend fun deleteFeed(feedId: Long) { feedDao.getFeedById(feedId)?.let { feedDao.delete(it) } }
-    suspend fun markArticleRead(articleId: Long) { articleDao.updateReadStatus(articleId, true) }
+    suspend fun markArticleRead(articleId: Long) {
+        val article = articleDao.getArticleById(articleId) ?: return
+        if (!article.isRead) {
+            articleDao.updateReadStatus(articleId, true)
+            val unreadCount = articleDao.getUnreadCount(article.feedId)
+            feedDao.updateUnreadCount(article.feedId, unreadCount)
+        }
+    }
     suspend fun toggleArticleStar(articleId: Long) { articleDao.getArticleById(articleId)?.let { articleDao.updateStarredStatus(articleId, !it.isStarred) } }
     suspend fun getArticleById(articleId: Long): FeedArticle? = articleDao.getArticleById(articleId)?.toDomain()
 }

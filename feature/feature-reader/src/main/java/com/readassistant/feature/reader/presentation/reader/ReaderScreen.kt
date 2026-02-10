@@ -6,6 +6,11 @@ import android.content.Context
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
@@ -18,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.readassistant.core.domain.model.ContentType
 import com.readassistant.core.ui.components.SelectionToolbar
 import com.readassistant.core.ui.theme.*
 import com.readassistant.feature.chat.presentation.ChatBottomSheet
@@ -48,21 +54,14 @@ fun ReaderScreen(
     val scope = rememberCoroutineScope()
     var showNoteDialog by remember { mutableStateOf(false) }
     var showNotesList by remember { mutableStateOf(false) }
+    var showTopBar by remember { mutableStateOf(false) }
 
     Scaffold(
-        topBar = {
-            ReaderTopBar(
-                title = uiState.title, onBack = onBack,
-                isBilingualMode = isBilingual,
-                onToggleTranslation = { translationViewModel.toggleBilingualMode() },
-                onSettingsClick = { viewModel.toggleSettingsPanel() },
-                onNotesClick = { showNotesList = true }
-            )
-        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = rc.background
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+    ) { _ ->
+        Box(Modifier.fillMaxSize()) {
             when {
                 uiState.isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 uiState.error != null -> Text(uiState.error!!, Modifier.align(Alignment.Center).padding(16.dp), color = MaterialTheme.colorScheme.error)
@@ -75,7 +74,30 @@ fun ReaderScreen(
                     onParagraphsExtracted = { paragraphs ->
                         translationViewModel.translateParagraphs(paragraphs)
                     },
+                    pagedMode = isBookContentType(uiState.contentType),
+                    onSwipeLeft = if (isBookContentType(uiState.contentType) && uiState.totalChapters > 1) ({ viewModel.nextBookPage() }) else null,
+                    onSwipeRight = if (isBookContentType(uiState.contentType) && uiState.totalChapters > 1) ({ viewModel.prevBookPage() }) else null,
+                    onSingleTap = { showTopBar = !showTopBar },
                     modifier = Modifier.fillMaxSize()
+                )
+            }
+            AnimatedVisibility(
+                visible = showTopBar,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { -it / 2 }),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { -it / 2 }),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+            ) {
+                ReaderTopBar(
+                    title = uiState.title, onBack = onBack,
+                    isBilingualMode = isBilingual,
+                    onToggleTranslation = { translationViewModel.toggleBilingualMode() },
+                    onSettingsClick = { viewModel.toggleSettingsPanel() },
+                    onNotesClick = { showNotesList = true },
+                    progressText = if (isBookContentType(uiState.contentType) && uiState.totalChapters > 1) {
+                        "${uiState.currentChapterIndex + 1} / ${uiState.totalChapters}"
+                    } else null
                 )
             }
             SelectionToolbar(
@@ -189,4 +211,9 @@ fun ReaderScreen(
             }
         }
     }
+}
+
+private fun isBookContentType(type: ContentType): Boolean = when (type) {
+    ContentType.RSS_ARTICLE, ContentType.WEB_ARTICLE -> false
+    else -> true
 }

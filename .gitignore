@@ -16,3 +16,5 @@ local.properties
 *.jks
 *.keystore
 android-sdk/
+temp_java
+setup_android.sh

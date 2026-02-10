@@ -1,6 +1,8 @@
 package com.readassistant.feature.reader.presentation.renderer
 
 import android.annotation.SuppressLint
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.ActionMode
 import android.view.Menu
 import android.view.MenuItem
@@ -22,9 +24,13 @@ fun WebViewReader(
     isBilingualMode: Boolean, translations: Map<Int, TranslationPair>,
     onTextSelected: (TextSelection) -> Unit, onProgressChanged: (Float) -> Unit,
     onParagraphsExtracted: (List<Pair<Int, String>>) -> Unit,
+    pagedMode: Boolean = false,
+    onSwipeLeft: (() -> Unit)? = null,
+    onSwipeRight: (() -> Unit)? = null,
+    onSingleTap: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val css = generateReaderCss(themeType, fontSize, lineHeight)
+    val css = generateReaderCss(themeType, fontSize, lineHeight, pagedMode)
     val html = remember(htmlContent, css) {
         """<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1.0"><style>$css</style></head><body><div id="reader-content">$htmlContent</div><script>
 var paras=document.querySelectorAll('#reader-content p,#reader-content h1,#reader-content h2,#reader-content h3,#reader-content h4,#reader-content li,#reader-content blockquote');
@@ -38,6 +44,9 @@ function removeAllTranslations(){document.querySelectorAll('.translation').forEa
     }
 
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    val onSwipeLeftState by rememberUpdatedState(onSwipeLeft)
+    val onSwipeRightState by rememberUpdatedState(onSwipeRight)
+    val onSingleTapState by rememberUpdatedState(onSingleTap)
 
     // When bilingual mode is toggled on, extract paragraphs; when off, remove translations
     LaunchedEffect(isBilingualMode) {
@@ -64,6 +73,38 @@ function removeAllTranslations(){document.querySelectorAll('.translation').forEa
     AndroidView(factory = { ctx ->
         WebView(ctx).apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
+            val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    onSingleTapState?.invoke()
+                    return false
+                }
+
+                override fun onFling(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    velocityX: Float,
+                    velocityY: Float
+                ): Boolean {
+                    if (e1 == null) return false
+                    val dx = e2.x - e1.x
+                    val dy = e2.y - e1.y
+                    val horizontalSwipe = kotlin.math.abs(dx) > kotlin.math.abs(dy)
+                    val distanceEnough = kotlin.math.abs(dx) > 120f
+                    val velocityEnough = kotlin.math.abs(velocityX) > 800f
+                    if (horizontalSwipe && distanceEnough && velocityEnough) {
+                        if (dx < 0) onSwipeLeftState?.invoke() else onSwipeRightState?.invoke()
+                        return true
+                    }
+                    return false
+                }
+            })
+            setOnTouchListener { _, event ->
+                gestureDetector.onTouchEvent(event)
+                if (pagedMode && event.action == MotionEvent.ACTION_MOVE) return@setOnTouchListener true
+                false
+            }
             val actionModeCallback = object : ActionMode.Callback {
                 override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean { menu?.clear(); return false }
                 override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean { menu?.clear(); return false }
@@ -102,7 +143,8 @@ function removeAllTranslations(){document.querySelectorAll('.translation').forEa
     }, modifier = modifier)
 }
 
-fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float): String {
+fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float, pagedMode: Boolean = false): String {
     val (bg, fg, link) = when (t) { ReadingThemeType.LIGHT -> Triple("#FFF","#1A1A1A","#4A90D9"); ReadingThemeType.SEPIA -> Triple("#FBF0D9","#3E2723","#8D6E63"); ReadingThemeType.DARK -> Triple("#1A1A2E","#E8E8E8","#64B5F6") }
-    return "* {box-sizing:border-box} body {background:$bg;color:$fg;font-family:-apple-system,sans-serif;font-size:${fs}px;line-height:$lh;padding:16px 24px;margin:0 auto;max-width:720px;word-wrap:break-word} a{color:$link} img{max-width:100%;height:auto} pre,code{background:${if(t==ReadingThemeType.DARK)"#0F3460" else "#F5F5F5"};padding:2px 6px;border-radius:4px;font-size:0.9em} blockquote{border-left:3px solid $link;margin-left:0;padding-left:16px} .translation{color:${if(t==ReadingThemeType.DARK)"#90A4AE" else "#666"};font-style:italic;background:${if(t==ReadingThemeType.DARK)"rgba(255,255,255,0.05)" else "rgba(0,0,0,0.03)"};border-left:3px solid $link;padding:8px 12px;margin:4px 0 16px 0}"
+    val overflowRule = if (pagedMode) "overflow:hidden;height:100vh;" else ""
+    return "* {box-sizing:border-box} body {background:$bg;color:$fg;font-family:-apple-system,sans-serif;font-size:${fs}px;line-height:$lh;padding:16px 24px;margin:0 auto;max-width:720px;word-wrap:break-word;$overflowRule} a{color:$link} img{max-width:100%;height:auto} pre,code{background:${if(t==ReadingThemeType.DARK)"#0F3460" else "#F5F5F5"};padding:2px 6px;border-radius:4px;font-size:0.9em} blockquote{border-left:3px solid $link;margin-left:0;padding-left:16px} .translation{color:${if(t==ReadingThemeType.DARK)"#90A4AE" else "#666"};font-style:italic;background:${if(t==ReadingThemeType.DARK)"rgba(255,255,255,0.05)" else "rgba(0,0,0,0.03)"};border-left:3px solid $link;padding:8px 12px;margin:4px 0 16px 0}"
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jsoup.Jsoup
 import javax.inject.Inject
 
 @HiltViewModel
@@ -31,6 +32,7 @@ class ReaderViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
     val themeType = userPreferences.themeType; val fontSize = userPreferences.fontSize; val lineHeight = userPreferences.lineHeight
+    private var bookPages: List<String> = emptyList()
 
     init {
         loadContent()
@@ -77,14 +79,27 @@ class ReaderViewModel @Inject constructor(
                 val b = bookDao.getBookById(contentIdLong)
                 if (b != null) {
                     val format = try { BookFormat.valueOf(b.format) } catch (_: Exception) { null }
-                    val htmlContent = if (format != null) {
+                    val extractedContent = if (format != null) {
                         withContext(Dispatchers.IO) {
                             bookParserFactory.getParser(format).extractContent(b.filePath)
                         }
                     } else {
                         "<p>Unsupported format: ${b.format}</p>"
                     }
-                    _uiState.update { it.copy(isLoading = false, title = b.title, htmlContent = htmlContent, contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB }, contentId = contentIdLong, totalChapters = b.totalChapters) }
+                    val htmlContent = extractedContent.ifBlank { "<p>No readable content extracted from this file.</p>" }
+                    val pages = paginateBookHtml(htmlContent)
+                    bookPages = pages
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            title = b.title,
+                            htmlContent = pages.firstOrNull().orEmpty(),
+                            contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB },
+                            contentId = contentIdLong,
+                            currentChapterIndex = 0,
+                            totalChapters = pages.size
+                        )
+                    }
                 } else {
                     _uiState.update { it.copy(isLoading = false, error = "Book not found") }
                 }
@@ -94,6 +109,8 @@ class ReaderViewModel @Inject constructor(
     }}
 
     fun saveProgress(p: Float) { viewModelScope.launch { val s = _uiState.value; readingProgressDao.upsert(ReadingProgressEntity(contentType = s.contentType.name, contentId = s.contentId, progressPercent = p)); _uiState.update { it.copy(progressPercent = p) } } }
+    fun prevBookPage() { setBookPage(_uiState.value.currentChapterIndex - 1) }
+    fun nextBookPage() { setBookPage(_uiState.value.currentChapterIndex + 1) }
     fun onTextSelected(sel: TextSelection) { _uiState.update { it.copy(textSelection = sel, showSelectionToolbar = true) } }
     fun clearSelection() { _uiState.update { it.copy(textSelection = null, showSelectionToolbar = false) } }
     fun addHighlight(color: String = "YELLOW") { val sel = _uiState.value.textSelection ?: return; viewModelScope.launch { highlightDao.insert(HighlightEntity(contentType = _uiState.value.contentType.name, contentId = _uiState.value.contentId, selectedText = sel.selectedText, color = color, paragraphIndex = sel.paragraphIndex)); clearSelection() } }
@@ -115,4 +132,73 @@ class ReaderViewModel @Inject constructor(
     fun updateFontSize(s: Float) { viewModelScope.launch { userPreferences.setFontSize(s) } }
     fun updateLineHeight(h: Float) { viewModelScope.launch { userPreferences.setLineHeight(h) } }
     fun updateTheme(t: String) { viewModelScope.launch { userPreferences.setThemeType(t) } }
+
+    private fun setBookPage(targetIndex: Int) {
+        if (!isBookContentType(_uiState.value.contentType)) return
+        if (bookPages.isEmpty()) return
+        val index = targetIndex.coerceIn(0, bookPages.lastIndex)
+        if (index == _uiState.value.currentChapterIndex) return
+        val progress = if (bookPages.size <= 1) 1f else index.toFloat() / bookPages.lastIndex.toFloat()
+        _uiState.update { it.copy(currentChapterIndex = index, htmlContent = bookPages[index], progressPercent = progress) }
+        viewModelScope.launch {
+            val s = _uiState.value
+            readingProgressDao.upsert(
+                ReadingProgressEntity(contentType = s.contentType.name, contentId = s.contentId, progressPercent = progress)
+            )
+        }
+    }
+
+    private fun isBookContentType(type: ContentType): Boolean = when (type) {
+        ContentType.RSS_ARTICLE, ContentType.WEB_ARTICLE -> false
+        else -> true
+    }
+
+    private fun paginateBookHtml(
+        html: String,
+        blocksPerPage: Int = 5,
+        maxCharsPerPage: Int = 900
+    ): List<String> {
+        val normalized = html.ifBlank { "<p>No readable content extracted from this file.</p>" }
+        val doc = Jsoup.parseBodyFragment(normalized)
+        val blocks = doc.body().children().flatMap { element ->
+            val blockHtml = element.outerHtml().trim()
+            if (blockHtml.isBlank()) return@flatMap emptyList()
+            val blockTextLen = element.text().length
+            if (blockTextLen <= maxCharsPerPage) return@flatMap listOf(blockHtml)
+
+            // Split oversized blocks into text chunks to keep a single page close to one screen.
+            val text = element.text().trim()
+            if (text.isBlank()) return@flatMap listOf(blockHtml)
+            text.chunked(maxCharsPerPage).map { chunk -> "<p>${chunk.replace("\n", "<br>")}</p>" }
+        }.filter { it.isNotBlank() }
+        if (blocks.isNotEmpty()) {
+            val pages = mutableListOf<String>()
+            val current = mutableListOf<String>()
+            var currentChars = 0
+            blocks.forEach { block ->
+                val blockChars = Jsoup.parseBodyFragment(block).text().length.coerceAtLeast(1)
+                val reachBlockLimit = current.size >= blocksPerPage
+                val reachCharLimit = currentChars + blockChars > maxCharsPerPage
+                if (current.isNotEmpty() && (reachBlockLimit || reachCharLimit)) {
+                    pages.add(current.joinToString("\n"))
+                    current.clear()
+                    currentChars = 0
+                }
+                current.add(block)
+                currentChars += blockChars
+            }
+            if (current.isNotEmpty()) pages.add(current.joinToString("\n"))
+            if (pages.size > 1) return pages
+        }
+
+        val textBlocks = doc.body().text().split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotBlank() }
+        if (textBlocks.isNotEmpty()) {
+            val merged = textBlocks.joinToString("\n\n")
+            if (merged.length > maxCharsPerPage) {
+                return merged.chunked(maxCharsPerPage).map { chunk -> "<p>${chunk.replace("\n", "<br>")}</p>" }
+            }
+            return textBlocks.chunked(blocksPerPage).map { chunk -> chunk.joinToString("\n") { "<p>$it</p>" } }
+        }
+        return listOf("<p>No readable content extracted from this file.</p>")
+    }
 }

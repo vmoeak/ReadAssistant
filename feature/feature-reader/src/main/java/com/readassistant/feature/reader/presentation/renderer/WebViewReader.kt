@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ActionMode
-import android.view.ViewConfiguration
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -21,6 +20,7 @@ import com.readassistant.feature.translation.domain.TranslationPair
 fun WebViewReader(
     htmlContent: String, themeType: ReadingThemeType, fontSize: Float, lineHeight: Float,
     isBilingualMode: Boolean, translations: Map<Int, TranslationPair>,
+    extractCommandId: Int = 0,
     onTextSelected: (TextSelection) -> Unit, onProgressChanged: (Float) -> Unit,
     onParagraphsExtracted: (List<Pair<Int, String>>) -> Unit,
     pagedMode: Boolean = false,
@@ -46,12 +46,54 @@ var isAnimating=false;
 var dragActive=false;
 var dragDirection=0;
 var dragProgress=0;
-var paras=document.querySelectorAll('#reader-content p,#reader-content h1,#reader-content h2,#reader-content h3,#reader-content h4,#reader-content li,#reader-content blockquote');
+function collectParagraphElements(){
+  var base=document.getElementById('reader-content');
+  if(!base) return [];
+  var selector='#reader-content p,#reader-content h1,#reader-content h2,#reader-content h3,#reader-content h4,#reader-content li,#reader-content blockquote,#reader-content div';
+  var blockContainerSelector='p,h1,h2,h3,h4,li,blockquote,div,table,ul,ol,pre';
+  var nodes=Array.from(document.querySelectorAll(selector));
+  return nodes.filter(function(el){
+    if(!el || el.id==='reader-content') return false;
+    if(el.classList && el.classList.contains('translation')) return false;
+    var text=(el.textContent||'').trim();
+    if(text.length===0) return false;
+    if(el.tagName==='DIV'){
+      if(el.querySelector(blockContainerSelector)) return false;
+    }
+    return true;
+  });
+}
+var paras=collectParagraphElements();
 paras.forEach(function(p,i){p.setAttribute('data-para-idx',i)});
 document.addEventListener('contextmenu',function(e){e.preventDefault();});
 document.addEventListener('selectionchange',function(){var s=window.getSelection();if(s&&s.toString().trim().length>0){try{var r=s.getRangeAt(0);var rect=r.getBoundingClientRect();var p=r.startContainer.parentElement;while(p&&!p.getAttribute('data-para-idx'))p=p.parentElement;Android.onTextSelected(s.toString(),r.startOffset,r.endOffset,p?parseInt(p.getAttribute('data-para-idx')):-1,rect.left,rect.top,rect.right,rect.bottom)}catch(e){}}});
 var st;window.addEventListener('scroll',function(){clearTimeout(st);st=setTimeout(function(){var t=window.pageYOffset;var h=document.documentElement.scrollHeight-window.innerHeight;Android.onScrollProgress(h>0?t/h:0)},200)});
-function extractParagraphs(){var r=[];paras.forEach(function(p,i){var t=p.textContent.trim();if(t.length>0)r.push(i+'||'+t)});Android.onParagraphsExtracted(r.join('@@SEP@@'))}
+function extractParagraphs(){
+  var r=[];
+  var pageStart=pageIndex*pageStride;
+  var pageEnd=pageStart+pageStride;
+  paras.forEach(function(p,i){
+    var t=p.textContent.trim();
+    if(t.length===0) return;
+    if(pagedMode){
+      var rect=p.getBoundingClientRect();
+      var left=p.offsetLeft||0;
+      var right=left+Math.max(1,p.offsetWidth||1);
+      var inCurrentPage=(left<pageEnd && right>pageStart);
+      var visible=rect.bottom>0 && rect.top<window.innerHeight && rect.right>0 && rect.left<window.innerWidth;
+      var keep=inCurrentPage||visible;
+      if(!keep) return;
+    }
+    r.push(i+'||'+t);
+  });
+  if(r.length===0){
+    paras.forEach(function(p,i){
+      var t=p.textContent.trim();
+      if(t.length>0) r.push(i+'||'+t);
+    });
+  }
+  Android.onParagraphsExtracted(r.join('@@SEP@@'));
+}
 function setTranslation(idx,text){var p=document.querySelector('[data-para-idx="'+idx+'"]');if(!p)return;var t=p.nextElementSibling;if(!t||!t.classList.contains('translation')){t=document.createElement('div');t.className='translation';t.setAttribute('data-trans-idx',idx);p.parentNode.insertBefore(t,p.nextSibling)}t.textContent=text}
 function removeAllTranslations(){document.querySelectorAll('.translation').forEach(function(e){e.remove()})}
 function emitChapters(){
@@ -270,14 +312,18 @@ function runTurnAnimation(direction, onMidpoint){
   return true;
 }
 function nextPage(){
-  if(!pagedMode || isAnimating) return false;
+  if(!pagedMode) return false;
   if(pageIndex>=totalPages-1) return false;
-  return runTurnAnimation(1,function(){pageIndex+=1;updatePageMetrics();});
+  pageIndex+=1;
+  updatePageMetrics();
+  return true;
 }
 function prevPage(){
-  if(!pagedMode || isAnimating) return false;
+  if(!pagedMode) return false;
   if(pageIndex<=0) return false;
-  return runTurnAnimation(-1,function(){pageIndex-=1;updatePageMetrics();});
+  pageIndex-=1;
+  updatePageMetrics();
+  return true;
 }
 function goToPage(target){
   if(!pagedMode) return false;
@@ -315,16 +361,32 @@ function clearNativeSelection(){
     val onPageChangedState by rememberUpdatedState(onPageChanged)
     val onChaptersExtractedState by rememberUpdatedState(onChaptersExtracted)
     val onSingleTapState by rememberUpdatedState(onSingleTap)
+    val isBilingualModeState by rememberUpdatedState(isBilingualMode)
     var lastHandledSeekCommandId by remember { mutableStateOf(0) }
+    var lastHandledExtractCommandId by remember { mutableStateOf(0) }
 
     // When bilingual mode is toggled on, extract paragraphs; when off, remove translations
     LaunchedEffect(isBilingualMode) {
         val wv = webViewRef ?: return@LaunchedEffect
         if (isBilingualMode) {
             wv.evaluateJavascript("extractParagraphs()", null)
+            // Re-apply already fetched translations when user toggles bilingual mode back on.
+            translations.forEach { (idx, pair) ->
+                val escaped = pair.translatedText
+                    .replace("\\", "\\\\")
+                    .replace("'", "\\'")
+                    .replace("\n", "\\n")
+                wv.evaluateJavascript("setTranslation($idx,'$escaped')", null)
+            }
         } else {
             wv.evaluateJavascript("removeAllTranslations()", null)
         }
+    }
+    LaunchedEffect(extractCommandId) {
+        val wv = webViewRef ?: return@LaunchedEffect
+        if (extractCommandId == 0 || extractCommandId == lastHandledExtractCommandId) return@LaunchedEffect
+        if (isBilingualMode) wv.evaluateJavascript("extractParagraphs()", null)
+        lastHandledExtractCommandId = extractCommandId
     }
 
     // Inject translations into WebView as they arrive
@@ -354,26 +416,6 @@ function clearNativeSelection(){
             override fun startActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? = null
         }.apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
-            val touchSlopPx = ViewConfiguration.get(ctx).scaledTouchSlop.toFloat()
-            var dragStartX = 0f
-            var dragStartY = 0f
-            var draggingPage = false
-            var dragProgress = 0f
-            var suppressLongPress = false
-            var longPressTriggered = false
-            var pageTurnIntent = false
-            var longPressEligible = true
-            val defaultLongClickable = isLongClickable
-            setOnLongClickListener {
-                if (!pagedMode) return@setOnLongClickListener false
-                if (draggingPage || suppressLongPress || pageTurnIntent || !longPressEligible) {
-                    // Page-turn already active/intentional: block long-press popup.
-                    return@setOnLongClickListener true
-                }
-                // Long-press wins this touch sequence: prevent page turn until finger up.
-                longPressTriggered = true
-                false
-            }
             val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent): Boolean = true
 
@@ -389,7 +431,6 @@ function clearNativeSelection(){
                     velocityX: Float,
                     velocityY: Float
                 ): Boolean {
-                    if (longPressTriggered) return false
                     if (e1 == null) return false
                     val dx = e2.x - e1.x
                     val dy = e2.y - e1.y
@@ -408,106 +449,20 @@ function clearNativeSelection(){
                 }
             })
             setOnTouchListener { _, event ->
-                if (!pagedMode) {
-                    gestureDetector.onTouchEvent(event)
-                    return@setOnTouchListener false
-                }
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        dragStartX = event.x
-                        dragStartY = event.y
-                        draggingPage = false
-                        dragProgress = 0f
-                        suppressLongPress = false
-                        longPressTriggered = false
-                        pageTurnIntent = false
-                        longPressEligible = true
-                        isLongClickable = defaultLongClickable
-                        gestureDetector.onTouchEvent(event)
-                        false
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        if (longPressTriggered) return@setOnTouchListener false
-                        val dx = event.x - dragStartX
-                        val dy = event.y - dragStartY
-                        val absDx = kotlin.math.abs(dx)
-                        val absDy = kotlin.math.abs(dy)
-                        val movedEnough = absDx > touchSlopPx * 0.35f || absDy > touchSlopPx * 0.35f
-                        if (movedEnough && longPressEligible) {
-                            longPressEligible = false
-                            suppressLongPress = true
-                            isLongClickable = false
-                            cancelLongPress()
-                        }
-                        val horizontalIntent = absDx > touchSlopPx * 0.45f && absDx > absDy * 1.05f
-
-                        // Cancel long-press as soon as horizontal page-turn intent appears,
-                        // even before we fully enter dragging state.
-                        if (horizontalIntent) {
-                            if (!pageTurnIntent) {
-                                pageTurnIntent = true
-                                evaluateJavascript("clearNativeSelection()", null)
-                            }
-                            if (!suppressLongPress) {
-                                suppressLongPress = true
-                                isLongClickable = false
-                                cancelLongPress()
-                            }
-                        }
-
-                        if (!draggingPage) {
-                            val horizontalEnough = absDx > touchSlopPx * 1.1f && absDx > absDy * 1.1f
-                            if (horizontalEnough) {
-                                val direction = if (dx < 0f) 1 else -1
-                                evaluateJavascript("beginDrag($direction)", null)
-                                // This touch sequence is page-turn intent; prevent long-press popup.
-                                suppressLongPress = true
-                                cancelLongPress()
-                                draggingPage = true
-                            }
-                        }
-                        if (draggingPage) {
-                            val w = width.coerceAtLeast(1).toFloat()
-                            dragProgress = (kotlin.math.abs(dx) / (w * 0.92f)).coerceIn(0f, 1f)
-                            evaluateJavascript("updateDragProgress($dragProgress)", null)
-                            true
-                        } else if (pageTurnIntent) {
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        val tappedOrFling = if (draggingPage || pageTurnIntent) false else gestureDetector.onTouchEvent(event)
-                        if (draggingPage) {
-                            val shouldCommit = dragProgress > 0.34f
-                            evaluateJavascript("endDrag(${if (shouldCommit) "true" else "false"})", null)
-                            draggingPage = false
-                            suppressLongPress = false
-                            longPressTriggered = false
-                            pageTurnIntent = false
-                            longPressEligible = false
-                            isLongClickable = defaultLongClickable
-                            true
-                        } else {
-                            suppressLongPress = false
-                            longPressTriggered = false
-                            pageTurnIntent = false
-                            longPressEligible = false
-                            isLongClickable = defaultLongClickable
-                            tappedOrFling
-                        }
-                    }
-                    else -> {
-                        gestureDetector.onTouchEvent(event)
-                        false
-                    }
-                }
+                gestureDetector.onTouchEvent(event)
+                false
             }
             addJavascriptInterface(object {
                 @JavascriptInterface fun onTextSelected(text: String, s: Int, e: Int, p: Int, l: Float, t: Float, r: Float, b: Float) { onTextSelected(TextSelection(text, s, e, p, SelectionRect(l, t, r, b))) }
                 @JavascriptInterface fun onScrollProgress(p: Float) { onProgressChanged(p) }
-                @JavascriptInterface fun onPageChanged(currentPage: Int, total: Int, progress: Float) { onPageChangedState?.invoke(currentPage, total, progress) }
+                @JavascriptInterface fun onPageChanged(currentPage: Int, total: Int, progress: Float) {
+                    onPageChangedState?.invoke(currentPage, total, progress)
+                    if (isBilingualModeState) {
+                        webViewRef?.post {
+                            webViewRef?.evaluateJavascript("extractParagraphs()", null)
+                        }
+                    }
+                }
                 @JavascriptInterface fun onChaptersExtracted(data: String) {
                     if (data.isBlank()) return
                     val pairs = data.split("@@SEP@@").mapNotNull { entry ->
@@ -525,6 +480,10 @@ function clearNativeSelection(){
                         val parts = entry.split("||", limit = 2)
                         if (parts.size == 2) parts[0].toIntOrNull()?.let { it to parts[1] } else null
                     }
+                    android.util.Log.w(
+                        "ReadAssistant",
+                        "onParagraphsExtracted size=${pairs.size} sampleIdx=${pairs.firstOrNull()?.first ?: -1}"
+                    )
                     onParagraphsExtracted(pairs)
                 }
             }, "Android")

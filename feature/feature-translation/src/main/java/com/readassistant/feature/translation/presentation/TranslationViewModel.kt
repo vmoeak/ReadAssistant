@@ -20,13 +20,24 @@ class TranslationViewModel @Inject constructor(private val repo: TranslationRepo
     val sourceLang = prefs.sourceLanguage; val targetLang = prefs.targetLanguage
 
     fun toggleBilingualMode() {
-        val newMode = !_isBilingual.value
-        _isBilingual.value = newMode
-        if (!newMode) clearTranslations()
+        _isBilingual.value = !_isBilingual.value
     }
     fun translateParagraphs(paragraphs: List<Pair<Int, String>>) { if (!_isBilingual.value) return; viewModelScope.launch { val s = sourceLang.first(); val t = targetLang.first()
+        android.util.Log.w(
+            "ReadAssistant",
+            "translateParagraphs bilingual=${_isBilingual.value} size=${paragraphs.size} sampleIdx=${paragraphs.firstOrNull()?.first ?: -1}"
+        )
         paragraphs.forEach { (i, txt) -> if (_translations.value.containsKey(i) || jobs.containsKey(i) || txt.isBlank()) return@forEach
-            jobs[i] = viewModelScope.launch { sem.acquire(); try { repo.getTranslation(i, txt, s, t).collect { p -> _translations.update { it + (i to p) } } } finally { sem.release() } }
+            android.util.Log.w("ReadAssistant", "queueTranslation idx=$i len=${txt.length}")
+            jobs[i] = viewModelScope.launch {
+                sem.acquire()
+                try {
+                    repo.getTranslation(i, txt, s, t).collect { p -> _translations.update { it + (i to p) } }
+                } finally {
+                    jobs.remove(i)
+                    sem.release()
+                }
+            }
         }
     }}
     fun clearTranslations() { jobs.values.forEach { it.cancel() }; jobs.clear(); _translations.value = emptyMap() }

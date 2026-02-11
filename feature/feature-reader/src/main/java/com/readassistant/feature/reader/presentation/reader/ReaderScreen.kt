@@ -70,6 +70,9 @@ fun ReaderScreen(
     var sliderDragging by remember { mutableStateOf(false) }
     var lastSelectionRect by remember { mutableStateOf<SelectionRect?>(null) }
     val isBook = isBookContentType(uiState.contentType)
+    LaunchedEffect(uiState.contentType, uiState.contentId) {
+        translationViewModel.clearTranslations()
+    }
     LaunchedEffect(uiState.textSelection?.rect) {
         uiState.textSelection?.rect?.let { lastSelectionRect = it }
     }

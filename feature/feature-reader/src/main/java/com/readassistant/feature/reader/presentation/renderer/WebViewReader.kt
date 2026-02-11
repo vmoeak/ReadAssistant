@@ -101,52 +101,59 @@ function setDragVisual(progress){
   var p=Math.max(0,Math.min(1,progress));
   var eased=1-Math.pow(1-p,1.55);
   var vw=Math.max(1,window.innerWidth);
-  var rotate=10+64*eased;
-  var skew=0.8+2.3*eased;
-  var shift=3+6*eased;
-  var ridge=Math.max(10,vw*(0.014+0.02*eased));
-  var shadeStrong=(0.16+0.24*eased);
-  var shadeSoft=(0.08+0.18*eased);
-  var glossStrong=(0.12+0.16*eased);
-  sheet.style.opacity='0.99';
-  back.style.opacity=String(0.12+0.28*eased);
-  shade.style.opacity=String(0.08+0.5*eased);
-  gloss.style.opacity=String(0.06+0.24*eased);
-  crease.style.opacity=String(0.16+0.58*eased);
+  var rotate=6+36*eased;
+  var skew=0.4+1.4*eased;
+  var shift=2+4*eased;
+  var shadowAlpha=(0.28+0.44*p).toFixed(3);
+  sheet.style.opacity='0.92';
   if(dragDirection>0){
-    var foldX=clamp(vw*(1-0.94*eased),0,vw);
-    var top=clamp(foldX+ridge*0.45,0,vw);
-    var mid=clamp(foldX+ridge*1.85,0,vw);
-    var bottom=clamp(foldX+ridge*0.30,0,vw);
-    var backLeft=clamp(foldX-ridge*1.55,0,vw);
+    var topX=clamp(vw*(1-p),0,vw);
+    var botX=clamp(vw*(1-0.68*p),0,vw);
+    var sw=vw*0.13;
+    var sTopL=clamp(topX-sw,0,vw);
+    var sBotL=clamp(botX-sw*0.9,0,vw);
     sheet.style.transformOrigin='right center';
-    sheet.style.transform='translateX('+(-0.9*eased)+'%) rotateY('+(-rotate)+'deg) skewY('+(-skew)+'deg)';
-    sheet.style.clipPath='polygon('+top+'px 0,100% 0,100% 100%,'+bottom+'px 100%,'+mid+'px 55%,'+mid+'px 45%)';
-    back.style.clipPath='polygon('+backLeft+'px 0,'+(top-ridge*0.28)+'px 0,'+(bottom-ridge*0.28)+'px 100%,'+backLeft+'px 100%)';
-    shade.style.background='linear-gradient(90deg,rgba(0,0,0,0) 0%,rgba(0,0,0,'+shadeSoft+') 56%,rgba(0,0,0,'+shadeStrong+') 100%)';
-    gloss.style.background='linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,'+glossStrong+') 72%,rgba(255,255,255,0.03) 100%)';
-    crease.style.left=(foldX-ridge*0.3)+'px';
+    sheet.style.transform='rotateY('+(-rotate)+'deg) skewY('+(-skew)+'deg)';
+    sheet.style.clipPath='polygon('+topX+'px 0,100% 0,100% 100%,'+botX+'px 100%)';
+    back.style.opacity=String((0.10+0.22*eased).toFixed(3));
+    back.style.clipPath='polygon(0 0,'+sTopL+'px 0,'+sBotL+'px 100%,0 100%)';
+    var sTopLpct=(sTopL/vw*100).toFixed(1);
+    var topXpct=(topX/vw*100).toFixed(1);
+    shade.style.opacity='1';
+    shade.style.clipPath='polygon('+sTopL+'px 0,'+topX+'px 0,'+botX+'px 100%,'+sBotL+'px 100%)';
+    shade.style.background='linear-gradient(90deg,rgba(0,0,0,0) '+sTopLpct+'%,rgba(0,0,0,'+shadowAlpha+') '+topXpct+'%)';
+    gloss.style.opacity=String((0.06+0.28*eased).toFixed(3));
+    gloss.style.background='linear-gradient(270deg,rgba(255,255,255,0.55) 0%,rgba(255,255,255,0.02) 100%)';
+    crease.style.left=(topX-2)+'px';
     crease.style.right='';
-    crease.style.transform='rotate(-1.4deg)';
+    crease.style.transform='rotate('+(-6*p)+'deg)';
+    crease.style.opacity=String((0.55+0.40*eased).toFixed(3));
     content.style.transform='translateX('+(-shift)+'px)';
-  } else {
-    var foldX2=clamp(vw*(0.94*eased),0,vw);
-    var top2=clamp(foldX2-ridge*0.45,0,vw);
-    var mid2=clamp(foldX2-ridge*1.85,0,vw);
-    var bottom2=clamp(foldX2-ridge*0.30,0,vw);
-    var backRight=clamp(foldX2+ridge*1.55,0,vw);
+  }else{
+    var topX2=clamp(vw*p,0,vw);
+    var botX2=clamp(vw*0.68*p,0,vw);
+    var sw2=vw*0.13;
+    var sTopR=clamp(topX2+sw2,0,vw);
+    var sBotR=clamp(botX2+sw2*0.9,0,vw);
     sheet.style.transformOrigin='left center';
-    sheet.style.transform='translateX('+(0.9*eased)+'%) rotateY('+rotate+'deg) skewY('+skew+'deg)';
-    sheet.style.clipPath='polygon(0 0,'+top2+'px 0,'+mid2+'px 45%,'+mid2+'px 55%,'+bottom2+'px 100%,0 100%)';
-    back.style.clipPath='polygon('+(top2+ridge*0.28)+'px 0,'+backRight+'px 0,'+backRight+'px 100%,'+(bottom2+ridge*0.28)+'px 100%)';
-    shade.style.background='linear-gradient(270deg,rgba(0,0,0,0) 0%,rgba(0,0,0,'+shadeSoft+') 56%,rgba(0,0,0,'+shadeStrong+') 100%)';
-    gloss.style.background='linear-gradient(270deg,rgba(255,255,255,0) 0%,rgba(255,255,255,'+glossStrong+') 72%,rgba(255,255,255,0.03) 100%)';
-    crease.style.right=(vw-foldX2-ridge*0.3)+'px';
+    sheet.style.transform='rotateY('+rotate+'deg) skewY('+skew+'deg)';
+    sheet.style.clipPath='polygon(0 0,'+topX2+'px 0,'+botX2+'px 100%,0 100%)';
+    back.style.opacity=String((0.10+0.22*eased).toFixed(3));
+    back.style.clipPath='polygon('+sTopR+'px 0,100% 0,100% 100%,'+sBotR+'px 100%)';
+    var topX2pct=(topX2/vw*100).toFixed(1);
+    var sTopRpct=(sTopR/vw*100).toFixed(1);
+    shade.style.opacity='1';
+    shade.style.clipPath='polygon('+topX2+'px 0,'+sTopR+'px 0,'+sBotR+'px 100%,'+botX2+'px 100%)';
+    shade.style.background='linear-gradient(90deg,rgba(0,0,0,'+shadowAlpha+') '+topX2pct+'%,rgba(0,0,0,0) '+sTopRpct+'%)';
+    gloss.style.opacity=String((0.06+0.28*eased).toFixed(3));
+    gloss.style.background='linear-gradient(90deg,rgba(255,255,255,0.55) 0%,rgba(255,255,255,0.02) 100%)';
+    crease.style.right=(vw-topX2-2)+'px';
     crease.style.left='';
-    crease.style.transform='rotate(1.4deg)';
+    crease.style.transform='rotate('+6*p+'deg)';
+    crease.style.opacity=String((0.55+0.40*eased).toFixed(3));
     content.style.transform='translateX('+shift+'px)';
   }
-  overlay.style.opacity=String(Math.max(0.12, 0.2 + 0.75*eased));
+  overlay.style.opacity='1';
 }
 function clearDragVisual(){
   var overlay=document.getElementById('page-turn-overlay');
@@ -226,30 +233,40 @@ function endDrag(commit){
 }
 function runTurnAnimation(direction, onMidpoint){
   if(!pagedMode || isAnimating || dragActive) return false;
+  if(direction>0 && pageIndex>=totalPages-1){onMidpoint();return true;}
+  if(direction<0 && pageIndex<=0){onMidpoint();return true;}
   var overlay=document.getElementById('page-turn-overlay');
-  var content=document.getElementById('reader-content');
   var body=document.body;
-  if(!overlay){
-    onMidpoint();
-    return true;
-  }
-  var duration=460;
-  var midpoint=direction>0?236:208;
   isAnimating=true;
-  overlay.classList.remove('turn-next','turn-prev','active');
-  if(content) content.classList.remove('turning-next','turning-prev','turning');
-  if(body) body.classList.remove('turning','turning-next','turning-prev');
-  overlay.classList.add(direction>0?'turn-next':'turn-prev');
-  if(content) content.classList.add('turning', direction>0?'turning-next':'turning-prev');
-  if(body) body.classList.add('turning', direction>0?'turning-next':'turning-prev');
-  requestAnimationFrame(function(){overlay.classList.add('active')});
-  setTimeout(function(){onMidpoint()},midpoint);
-  setTimeout(function(){
-    overlay.classList.remove('active','turn-next','turn-prev');
-    if(content) content.classList.remove('turning','turning-next','turning-prev');
-    if(body) body.classList.remove('turning','turning-next','turning-prev');
-    isAnimating=false;
-  },duration);
+  dragDirection=direction>0?1:-1;
+  dragProgress=0;
+  dragActive=true;
+  if(overlay){
+    overlay.classList.remove('turn-next','turn-prev');
+    overlay.classList.add('active',dragDirection>0?'turn-next':'turn-prev');
+  }
+  if(body) body.classList.add('dragging');
+  var duration=380;
+  var midFired=false;
+  var from=performance.now();
+  function tick(now){
+    var t=Math.min(1,(now-from)/duration);
+    var e=t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+    dragProgress=e;
+    setDragVisual(dragProgress);
+    if(!midFired && t>=0.52){midFired=true;onMidpoint();}
+    if(t<1){
+      requestAnimationFrame(tick);
+    }else{
+      if(!midFired){midFired=true;onMidpoint();}
+      dragActive=false;
+      dragDirection=0;
+      dragProgress=0;
+      isAnimating=false;
+      clearDragVisual();
+    }
+  }
+  requestAnimationFrame(tick);
   return true;
 }
 function nextPage(){
@@ -527,6 +544,9 @@ fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float, pagedMode: Bool
     val curlHighlight = if (t == ReadingThemeType.DARK) "rgba(255,255,255,0.24)" else "rgba(255,255,255,0.82)"
     val curlShadowStrong = if (t == ReadingThemeType.DARK) "rgba(0,0,0,0.58)" else "rgba(0,0,0,0.28)"
     val curlShadowSoft = if (t == ReadingThemeType.DARK) "rgba(0,0,0,0.34)" else "rgba(0,0,0,0.16)"
+    // Opaque fold crease colors (no transparency — sheet must be fully opaque so text doesn't bleed through)
+    val foldShadow = when (t) { ReadingThemeType.DARK -> "#0e0e22"; ReadingThemeType.SEPIA -> "#c8bba5"; else -> "#d0d0d0" }
+    val foldHighlight = when (t) { ReadingThemeType.DARK -> "#28284a"; ReadingThemeType.SEPIA -> "#fdf4e4"; else -> "#ffffff" }
     val bodyRule = if (pagedMode) {
         "padding:12px 24px 8px 24px;margin:0;max-width:none;overflow:hidden;height:100vh;"
     } else {
@@ -536,10 +556,7 @@ fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float, pagedMode: Bool
         """
         #reader-content{height:100%;width:100%;column-width:calc(100vw - 48px);column-gap:24px;column-fill:auto;overflow:hidden;overflow-wrap:anywhere;word-break:break-word;transform-origin:center center;will-change:transform;backface-visibility:hidden;}
         #reader-content>*{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;}
-        body.turning #reader-content{filter:brightness(0.992);}
         body.dragging,body.dragging *{-webkit-user-select:none !important;user-select:none !important;-webkit-touch-callout:none !important;}
-        #reader-content.turning-next{animation:contentTurnNext 460ms cubic-bezier(0.23,0.72,0.26,1);}
-        #reader-content.turning-prev{animation:contentTurnPrev 460ms cubic-bezier(0.23,0.72,0.26,1);}
         #page-turn-overlay{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:999;transform-style:preserve-3d;backface-visibility:hidden;perspective:2200px;overflow:hidden;will-change:opacity;}
         #page-turn-overlay.active{opacity:1;}
         #page-turn-overlay.turn-next{transform-origin:right center;}
@@ -548,13 +565,13 @@ fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float, pagedMode: Bool
           position:absolute;inset:0;opacity:0;backface-visibility:hidden;will-change:transform,clip-path,opacity;
         }
         #page-turn-overlay .sheet{
-          background:$bg;opacity:0.99;box-shadow:0 0 0 1px rgba(255,255,255,0.06) inset;
+          background:$bg;opacity:0.88;
         }
         #page-turn-overlay.turn-next .sheet{
-          background:linear-gradient(90deg,$bg 0%,$curlHighlight 24%,$bg 58%,$curlShadowSoft 100%);
+          background:linear-gradient(90deg,$foldShadow 0%,$foldHighlight 6%,$bg 18%);
         }
         #page-turn-overlay.turn-prev .sheet{
-          background:linear-gradient(270deg,$bg 0%,$curlHighlight 24%,$bg 58%,$curlShadowSoft 100%);
+          background:linear-gradient(270deg,$foldShadow 0%,$foldHighlight 6%,$bg 18%);
         }
         #page-turn-overlay .back{
           background:linear-gradient(90deg,rgba(0,0,0,0.05) 0%,rgba(255,255,255,0.24) 52%,rgba(0,0,0,0.14) 100%);
@@ -566,35 +583,11 @@ fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float, pagedMode: Bool
         #page-turn-overlay .shade{opacity:0;}
         #page-turn-overlay .gloss{opacity:0;mix-blend-mode:screen;}
         #page-turn-overlay .crease{
-          position:absolute;top:0;bottom:0;width:2px;opacity:0;
-          background:linear-gradient(180deg,rgba(255,255,255,0.78) 0%,rgba(255,255,255,0.06) 48%,rgba(0,0,0,0.3) 100%);
-          filter:blur(0.7px);
+          position:absolute;top:0;bottom:0;width:5px;opacity:0;
+          background:linear-gradient(90deg,rgba(0,0,0,0.18) 0%,rgba(255,255,255,0.92) 40%,rgba(255,255,255,0.60) 100%);
+          filter:blur(1.5px);
           will-change:left,right,opacity,transform;
         }
-        #page-turn-overlay.turn-next.active .sheet{animation:pageSheetNext 460ms cubic-bezier(0.18,0.70,0.24,1) forwards;}
-        #page-turn-overlay.turn-prev.active .sheet{animation:pageSheetPrev 460ms cubic-bezier(0.18,0.70,0.24,1) forwards;}
-        #page-turn-overlay.turn-next.active .shade{animation:pageShadeNext 460ms ease-out forwards;}
-        #page-turn-overlay.turn-prev.active .shade{animation:pageShadePrev 460ms ease-out forwards;}
-        #page-turn-overlay.turn-next.active .gloss{animation:pageGlossNext 460ms ease-out forwards;}
-        #page-turn-overlay.turn-prev.active .gloss{animation:pageGlossPrev 460ms ease-out forwards;}
-        @keyframes contentTurnNext{0%{transform:translateX(0);}30%{transform:translateX(-3px);}58%{transform:translateX(-5px);}100%{transform:translateX(0);}}
-        @keyframes contentTurnPrev{0%{transform:translateX(0);}30%{transform:translateX(3px);}58%{transform:translateX(5px);}100%{transform:translateX(0);}}
-        @keyframes pageSheetNext{
-          0%{transform:translateX(0) rotateY(0deg) skewY(0deg);clip-path:polygon(100% 0,100% 0,100% 100%,100% 100%);}
-          36%{transform:translateX(1%) rotateY(-18deg) skewY(-0.8deg);clip-path:polygon(28% 0,100% 0,100% 100%,28% 100%);}
-          70%{transform:translateX(-3%) rotateY(-44deg) skewY(-1.8deg);clip-path:polygon(8% 0,94% 0,94% 100%,8% 100%);}
-          100%{transform:translateX(-7%) rotateY(-66deg) skewY(-2.2deg);clip-path:polygon(0 0,82% 0,82% 100%,0 100%);}
-        }
-        @keyframes pageSheetPrev{
-          0%{transform:translateX(0) rotateY(0deg) skewY(0deg);clip-path:polygon(0 0,0 0,0 100%,0 100%);}
-          36%{transform:translateX(-1%) rotateY(18deg) skewY(0.8deg);clip-path:polygon(0 0,72% 0,72% 100%,0 100%);}
-          70%{transform:translateX(3%) rotateY(44deg) skewY(1.8deg);clip-path:polygon(6% 0,92% 0,92% 100%,6% 100%);}
-          100%{transform:translateX(7%) rotateY(66deg) skewY(2.2deg);clip-path:polygon(18% 0,100% 0,100% 100%,18% 100%);}
-        }
-        @keyframes pageShadeNext{0%{opacity:0.02;}36%{opacity:0.20;}72%{opacity:0.34;}100%{opacity:0.08;}}
-        @keyframes pageShadePrev{0%{opacity:0.02;}36%{opacity:0.22;}72%{opacity:0.36;}100%{opacity:0.08;}}
-        @keyframes pageGlossNext{0%{opacity:0.03;}42%{opacity:0.18;}100%{opacity:0;}}
-        @keyframes pageGlossPrev{0%{opacity:0.03;}42%{opacity:0.18;}100%{opacity:0;}}
         """
     } else {
         ""

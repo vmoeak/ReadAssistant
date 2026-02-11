@@ -14,6 +14,7 @@ import com.readassistant.core.domain.model.TextSelection
 import com.readassistant.core.domain.model.SelectionRect
 import com.readassistant.core.ui.theme.ReadingThemeType
 import com.readassistant.feature.translation.domain.TranslationPair
+import java.io.File
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -408,7 +409,7 @@ function clearNativeSelection(){
         lastHandledSeekCommandId = seekCommandId
     }
 
-    var lastLoadedHtml by remember { mutableStateOf("") }
+    var lastLoadedHtmlSignature by remember { mutableStateOf<Int?>(null) }
 
     AndroidView(factory = { ctx ->
         object : WebView(ctx) {
@@ -491,9 +492,17 @@ function clearNativeSelection(){
             webViewRef = this
         }
     }, update = { wv ->
-        if (html != lastLoadedHtml) {
-            lastLoadedHtml = html
-            wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+        val htmlSignature = 31 * html.hashCode() + html.length
+        if (htmlSignature != lastLoadedHtmlSignature) {
+            lastLoadedHtmlSignature = htmlSignature
+            runCatching {
+                val htmlFile = File(wv.context.cacheDir, "reader_current_page.html")
+                htmlFile.writeText(html, Charsets.UTF_8)
+                wv.loadUrl("file://${htmlFile.absolutePath}")
+            }.getOrElse {
+                // Fallback for unexpected file I/O failures.
+                wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
         }
     }, modifier = modifier)
 }

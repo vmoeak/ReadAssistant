@@ -1,5 +1,6 @@
 package com.readassistant.feature.reader.presentation.reader
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,10 +13,12 @@ import com.readassistant.core.domain.model.TextSelection
 import com.readassistant.feature.library.data.parser.BookParserFactory
 import com.readassistant.feature.library.domain.BookFormat
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
@@ -24,7 +27,8 @@ class ReaderViewModel @Inject constructor(
     private val webArticleDao: WebArticleDao, private val readingProgressDao: ReadingProgressDao,
     private val highlightDao: HighlightDao, private val noteDao: NoteDao, private val feedDao: FeedDao,
     private val userPreferences: UserPreferences,
-    private val bookParserFactory: BookParserFactory
+    private val bookParserFactory: BookParserFactory,
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
     private val contentIdLong: Long = (savedStateHandle.get<String>("contentId") ?: "0").toLongOrNull() ?: 0L
@@ -77,13 +81,7 @@ class ReaderViewModel @Inject constructor(
                 val b = bookDao.getBookById(contentIdLong)
                 if (b != null) {
                     val format = try { BookFormat.valueOf(b.format) } catch (_: Exception) { null }
-                    val extractedContent = if (format != null) {
-                        withContext(Dispatchers.IO) {
-                            bookParserFactory.getParser(format).extractContent(b.filePath)
-                        }
-                    } else {
-                        "<p>Unsupported format: ${b.format}</p>"
-                    }
+                    val extractedContent = if (format != null) loadBookContentWithCache(b, format) else "<p>Unsupported format: ${b.format}</p>"
                     val htmlContent = extractedContent.ifBlank { "<p>No readable content extracted from this file.</p>" }
                     _uiState.update {
                         it.copy(
@@ -104,6 +102,26 @@ class ReaderViewModel @Inject constructor(
             else -> _uiState.update { it.copy(isLoading = false, error = "Unknown content type") }
         } } catch (e: Exception) { _uiState.update { it.copy(isLoading = false, error = e.message) } }
     }}
+
+    private suspend fun loadBookContentWithCache(book: com.readassistant.core.data.db.entity.BookEntity, format: BookFormat): String {
+        return withContext(Dispatchers.IO) {
+            val source = File(book.filePath)
+            val sourceMtime = runCatching { source.lastModified() }.getOrDefault(0L)
+            val cacheDir = File(appContext.cacheDir, "book_content_cache").apply { mkdirs() }
+            val cacheName = "book_${book.id}_${book.fileSize}_$sourceMtime.html"
+            val cacheFile = File(cacheDir, cacheName)
+
+            if (cacheFile.exists()) {
+                return@withContext runCatching { cacheFile.readText(Charsets.UTF_8) }.getOrElse { "" }
+            }
+
+            val parsed = bookParserFactory.getParser(format).extractContent(book.filePath)
+            if (parsed.isNotBlank()) {
+                runCatching { cacheFile.writeText(parsed, Charsets.UTF_8) }
+            }
+            parsed
+        }
+    }
 
     fun saveProgress(p: Float) { viewModelScope.launch { val s = _uiState.value; readingProgressDao.upsert(ReadingProgressEntity(contentType = s.contentType.name, contentId = s.contentId, progressPercent = p)); _uiState.update { it.copy(progressPercent = p) } } }
     fun prevBookPage() {}

@@ -19,13 +19,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.readassistant.core.data.db.dao.BookDao
 import com.readassistant.core.data.db.entity.BookEntity
+import com.readassistant.feature.library.data.cache.BookContentCache
+import com.readassistant.feature.library.data.cache.BookParagraphCache
 import com.readassistant.feature.library.data.parser.BookParserFactory
 import com.readassistant.feature.library.domain.BookFormat
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
@@ -42,7 +46,8 @@ class ImportBookViewModel @Inject constructor(@ApplicationContext private val co
 
     fun importBook(uri: Uri) { viewModelScope.launch {
         _state.value = ImportState.Loading
-        try {
+        runCatching {
+            withContext(Dispatchers.IO) {
             val name = queryFileName(uri)
                 ?: uri.lastPathSegment?.substringAfterLast("/")
                 ?: "unknown"
@@ -50,14 +55,54 @@ class ImportBookViewModel @Inject constructor(@ApplicationContext private val co
             val mimeType = context.contentResolver.getType(uri)
             val format = BookFormat.fromExtension(ext)
                 ?: mimeType?.let { BookFormat.fromMimeType(it) }
-                ?: run { _state.value = ImportState.Error("Unsupported format: .$ext"); return@launch }
+                ?: error("Unsupported format: .$ext")
             val dir = File(context.filesDir, "books/${System.currentTimeMillis()}"); dir.mkdirs()
             val dest = File(dir, name)
-            context.contentResolver.openInputStream(uri)?.use { i -> dest.outputStream().use { o -> i.copyTo(o) } }
-            val meta = parserFactory.getParser(format).parseMetadata(dest.absolutePath)
-            val id = bookDao.insert(BookEntity(filePath = dest.absolutePath, format = format.name, title = meta.title, author = meta.author, coverPath = meta.coverPath, totalChapters = meta.totalChapters, fileSize = dest.length()))
+                context.contentResolver.openInputStream(uri)?.use { i ->
+                    dest.outputStream().use { o -> i.copyTo(o) }
+                } ?: error("Failed to open selected file")
+
+                val parser = parserFactory.getParser(format)
+                val meta = parser.parseMetadata(dest.absolutePath)
+                val fileSize = dest.length()
+                val id = bookDao.insert(
+                    BookEntity(
+                        filePath = dest.absolutePath,
+                        format = format.name,
+                        title = meta.title,
+                        author = meta.author,
+                        coverPath = meta.coverPath,
+                        totalChapters = meta.totalChapters,
+                        fileSize = fileSize
+                    )
+                )
+
+                // Pre-build reading cache on import so opening book can hit cache immediately.
+                runCatching {
+                    val content = parser.extractContent(dest.absolutePath)
+                    BookContentCache.writeCachedHtml(
+                        context = context,
+                        bookId = id,
+                        fileSize = fileSize,
+                        sourcePath = dest.absolutePath,
+                        html = content
+                    )
+                    val parsed = BookParagraphCache.buildFromHtml(content)
+                    BookParagraphCache.writeCachedContent(
+                        context = context,
+                        bookId = id,
+                        fileSize = fileSize,
+                        sourcePath = dest.absolutePath,
+                        content = parsed
+                    )
+                }
+                id
+            }
+        }.onSuccess { id ->
             _state.value = ImportState.Success(id)
-        } catch (e: Exception) { _state.value = ImportState.Error(e.message ?: "Import failed") }
+        }.onFailure { e ->
+            _state.value = ImportState.Error(e.message ?: "Import failed")
+        }
     }}
 
     sealed class ImportState { data object Idle : ImportState(); data object Loading : ImportState(); data class Success(val bookId: Long) : ImportState(); data class Error(val message: String) : ImportState() }

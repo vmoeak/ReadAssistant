@@ -10,6 +10,8 @@ import com.readassistant.core.data.db.entity.ReadingProgressEntity
 import com.readassistant.core.data.datastore.UserPreferences
 import com.readassistant.core.domain.model.ContentType
 import com.readassistant.core.domain.model.TextSelection
+import com.readassistant.feature.library.data.cache.BookContentCache
+import com.readassistant.feature.library.data.cache.BookParagraphCache
 import com.readassistant.feature.library.data.parser.BookParserFactory
 import com.readassistant.feature.library.domain.BookFormat
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -18,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
@@ -32,7 +33,17 @@ class ReaderViewModel @Inject constructor(
 ) : ViewModel() {
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
     private val contentIdLong: Long = (savedStateHandle.get<String>("contentId") ?: "0").toLongOrNull() ?: 0L
-    private val _uiState = MutableStateFlow(ReaderUiState())
+    private val _uiState = MutableStateFlow(
+        ReaderUiState(
+            isLoading = contentTypeStr != "BOOK",
+            contentType = when (contentTypeStr) {
+                "WEB_ARTICLE" -> ContentType.WEB_ARTICLE
+                "BOOK" -> ContentType.EPUB
+                else -> ContentType.RSS_ARTICLE
+            },
+            contentId = contentIdLong
+        )
+    )
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
     val themeType = userPreferences.themeType; val fontSize = userPreferences.fontSize; val lineHeight = userPreferences.lineHeight
 
@@ -44,7 +55,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun loadContent() { viewModelScope.launch {
-        _uiState.update { it.copy(isLoading = true) }
+        _uiState.update { it.copy(isLoading = contentTypeStr != "BOOK") }
         try { when (contentTypeStr) {
             "RSS_ARTICLE" -> {
                 val a = articleDao.getArticleById(contentIdLong)
@@ -81,18 +92,37 @@ class ReaderViewModel @Inject constructor(
                 val b = bookDao.getBookById(contentIdLong)
                 if (b != null) {
                     val format = try { BookFormat.valueOf(b.format) } catch (_: Exception) { null }
-                    val extractedContent = if (format != null) loadBookContentWithCache(b, format) else "<p>Unsupported format: ${b.format}</p>"
-                    val htmlContent = extractedContent.ifBlank { "<p>No readable content extracted from this file.</p>" }
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
+                    val memoryCached = BookParagraphCache.readMemoryCachedContent(
+                        bookId = b.id,
+                        fileSize = b.fileSize,
+                        sourcePath = b.filePath
+                    )
+                    if (memoryCached != null) {
+                        applyBookContent(
                             title = b.title,
-                            htmlContent = htmlContent,
-                            contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB },
+                            formatName = b.format,
                             contentId = contentIdLong,
-                            currentChapterIndex = 0,
-                            totalChapters = 0,
-                            chapters = emptyList()
+                            structured = memoryCached
+                        )
+                    } else {
+                        val structured = if (format != null) {
+                            loadBookStructuredContentWithCache(b, format)
+                        } else {
+                            BookParagraphCache.CachedBookContent(
+                                paragraphs = listOf(
+                                    BookParagraphCache.CachedParagraph(
+                                        text = "Unsupported format: ${b.format}",
+                                        isHeading = false
+                                    )
+                                ),
+                                chapters = emptyList()
+                            )
+                        }
+                        applyBookContent(
+                            title = b.title,
+                            formatName = b.format,
+                            contentId = contentIdLong,
+                            structured = structured
                         )
                     }
                 } else {
@@ -105,21 +135,80 @@ class ReaderViewModel @Inject constructor(
 
     private suspend fun loadBookContentWithCache(book: com.readassistant.core.data.db.entity.BookEntity, format: BookFormat): String {
         return withContext(Dispatchers.IO) {
-            val source = File(book.filePath)
-            val sourceMtime = runCatching { source.lastModified() }.getOrDefault(0L)
-            val cacheDir = File(appContext.cacheDir, "book_content_cache").apply { mkdirs() }
-            val cacheName = "book_${book.id}_${book.fileSize}_$sourceMtime.html"
-            val cacheFile = File(cacheDir, cacheName)
-
-            if (cacheFile.exists()) {
-                return@withContext runCatching { cacheFile.readText(Charsets.UTF_8) }.getOrElse { "" }
+            val cached = BookContentCache.readCachedHtml(
+                context = appContext,
+                bookId = book.id,
+                fileSize = book.fileSize,
+                sourcePath = book.filePath
+            )
+            if (cached != null) {
+                return@withContext cached
             }
 
-            val parsed = bookParserFactory.getParser(format).extractContent(book.filePath)
-            if (parsed.isNotBlank()) {
-                runCatching { cacheFile.writeText(parsed, Charsets.UTF_8) }
-            }
+            val parsed = BookContentCache.clampBookHtml(
+                bookParserFactory.getParser(format).extractContent(book.filePath)
+            )
+            BookContentCache.writeCachedHtml(
+                context = appContext,
+                bookId = book.id,
+                fileSize = book.fileSize,
+                sourcePath = book.filePath,
+                html = parsed
+            )
             parsed
+        }
+    }
+
+    private suspend fun loadBookStructuredContentWithCache(
+        book: com.readassistant.core.data.db.entity.BookEntity,
+        format: BookFormat
+    ): BookParagraphCache.CachedBookContent {
+        return withContext(Dispatchers.IO) {
+            val cached = BookParagraphCache.readCachedContent(
+                context = appContext,
+                bookId = book.id,
+                fileSize = book.fileSize,
+                sourcePath = book.filePath
+            )
+            if (cached != null) return@withContext cached
+
+            val html = loadBookContentWithCache(book, format)
+            val parsed = BookParagraphCache.buildFromHtml(html)
+            BookParagraphCache.writeCachedContent(
+                context = appContext,
+                bookId = book.id,
+                fileSize = book.fileSize,
+                sourcePath = book.filePath,
+                content = parsed
+            )
+            parsed
+        }
+    }
+
+    private fun applyBookContent(
+        title: String,
+        formatName: String,
+        contentId: Long,
+        structured: BookParagraphCache.CachedBookContent
+    ) {
+        val readerParagraphs = structured.paragraphs.mapIndexed { index, paragraph ->
+            ReaderParagraph(index = index, text = paragraph.text, isHeading = paragraph.isHeading)
+        }
+        val readerChapters = structured.chapters.map {
+            ReaderChapter(title = it.title, pageIndex = it.paragraphIndex)
+        }
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                title = title,
+                htmlContent = "",
+                bookParagraphs = readerParagraphs,
+                contentType = try { ContentType.valueOf(formatName) } catch (_: Exception) { ContentType.EPUB },
+                contentId = contentId,
+                currentChapterIndex = 0,
+                totalChapters = readerParagraphs.size.coerceAtLeast(1),
+                chapters = readerChapters
+            )
         }
     }
 

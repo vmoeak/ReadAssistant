@@ -1,9 +1,12 @@
 package com.readassistant.feature.reader.presentation.renderer
 
 import android.annotation.SuppressLint
+import android.graphics.Color
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ActionMode
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -15,6 +18,8 @@ import com.readassistant.core.domain.model.SelectionRect
 import com.readassistant.core.ui.theme.ReadingThemeType
 import com.readassistant.feature.translation.domain.TranslationPair
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -24,6 +29,7 @@ fun WebViewReader(
     extractCommandId: Int = 0,
     onTextSelected: (TextSelection) -> Unit, onProgressChanged: (Float) -> Unit,
     onParagraphsExtracted: (List<Pair<Int, String>>) -> Unit,
+    onPageRenderReady: ((Boolean) -> Unit)? = null,
     pagedMode: Boolean = false,
     onSwipeLeft: (() -> Unit)? = null,
     onSwipeRight: (() -> Unit)? = null,
@@ -64,16 +70,24 @@ function collectParagraphElements(){
     return true;
   });
 }
-var paras=collectParagraphElements();
-paras.forEach(function(p,i){p.setAttribute('data-para-idx',i)});
+var paras=[];
+var parasInitialized=false;
+function ensureParas(){
+  if(parasInitialized) return paras;
+  paras=collectParagraphElements();
+  paras.forEach(function(p,i){p.setAttribute('data-para-idx',i)});
+  parasInitialized=true;
+  return paras;
+}
 document.addEventListener('contextmenu',function(e){e.preventDefault();});
-document.addEventListener('selectionchange',function(){var s=window.getSelection();if(s&&s.toString().trim().length>0){try{var r=s.getRangeAt(0);var rect=r.getBoundingClientRect();var p=r.startContainer.parentElement;while(p&&!p.getAttribute('data-para-idx'))p=p.parentElement;Android.onTextSelected(s.toString(),r.startOffset,r.endOffset,p?parseInt(p.getAttribute('data-para-idx')):-1,rect.left,rect.top,rect.right,rect.bottom)}catch(e){}}});
+document.addEventListener('selectionchange',function(){var s=window.getSelection();if(s&&s.toString().trim().length>0){try{ensureParas();var r=s.getRangeAt(0);var rect=r.getBoundingClientRect();var p=r.startContainer.parentElement;while(p&&!p.getAttribute('data-para-idx'))p=p.parentElement;Android.onTextSelected(s.toString(),r.startOffset,r.endOffset,p?parseInt(p.getAttribute('data-para-idx')):-1,rect.left,rect.top,rect.right,rect.bottom)}catch(e){}}});
 var st;window.addEventListener('scroll',function(){clearTimeout(st);st=setTimeout(function(){var t=window.pageYOffset;var h=document.documentElement.scrollHeight-window.innerHeight;Android.onScrollProgress(h>0?t/h:0)},200)});
 function extractParagraphs(){
+  var all=ensureParas();
   var r=[];
   var pageStart=pageIndex*pageStride;
   var pageEnd=pageStart+pageStride;
-  paras.forEach(function(p,i){
+  all.forEach(function(p,i){
     var t=p.textContent.trim();
     if(t.length===0) return;
     if(pagedMode){
@@ -88,14 +102,14 @@ function extractParagraphs(){
     r.push(i+'||'+t);
   });
   if(r.length===0){
-    paras.forEach(function(p,i){
+    all.forEach(function(p,i){
       var t=p.textContent.trim();
       if(t.length>0) r.push(i+'||'+t);
     });
   }
   Android.onParagraphsExtracted(r.join('@@SEP@@'));
 }
-function setTranslation(idx,text){var p=document.querySelector('[data-para-idx="'+idx+'"]');if(!p)return;var t=p.nextElementSibling;if(!t||!t.classList.contains('translation')){t=document.createElement('div');t.className='translation';t.setAttribute('data-trans-idx',idx);p.parentNode.insertBefore(t,p.nextSibling)}t.textContent=text}
+function setTranslation(idx,text){ensureParas();var p=document.querySelector('[data-para-idx="'+idx+'"]');if(!p)return;var t=p.nextElementSibling;if(!t||!t.classList.contains('translation')){t=document.createElement('div');t.className='translation';t.setAttribute('data-trans-idx',idx);p.parentNode.insertBefore(t,p.nextSibling)}t.textContent=text}
 function removeAllTranslations(){document.querySelectorAll('.translation').forEach(function(e){e.remove()})}
 function emitChapters(){
   if(!pagedMode || pageStride<=0) return;
@@ -357,10 +371,15 @@ function clearNativeSelection(){
     }
 
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    val latestHtmlRef = remember { AtomicReference("") }
+    val latestHtmlSignatureRef = remember { AtomicInteger(0) }
+    val lastRetrySignatureRef = remember { AtomicInteger(Int.MIN_VALUE) }
+    val readyNotifiedSignatureRef = remember { AtomicInteger(Int.MIN_VALUE) }
     val onSwipeLeftState by rememberUpdatedState(onSwipeLeft)
     val onSwipeRightState by rememberUpdatedState(onSwipeRight)
     val onPageChangedState by rememberUpdatedState(onPageChanged)
     val onChaptersExtractedState by rememberUpdatedState(onChaptersExtracted)
+    val onPageRenderReadyState by rememberUpdatedState(onPageRenderReady)
     val onSingleTapState by rememberUpdatedState(onSingleTap)
     val isBilingualModeState by rememberUpdatedState(isBilingualMode)
     var lastHandledSeekCommandId by remember { mutableStateOf(0) }
@@ -370,23 +389,28 @@ function clearNativeSelection(){
     LaunchedEffect(isBilingualMode) {
         val wv = webViewRef ?: return@LaunchedEffect
         if (isBilingualMode) {
-            wv.evaluateJavascript("extractParagraphs()", null)
+            wv.evaluateJavascript("if (typeof extractParagraphs==='function'){extractParagraphs();}", null)
             // Re-apply already fetched translations when user toggles bilingual mode back on.
             translations.forEach { (idx, pair) ->
                 val escaped = pair.translatedText
                     .replace("\\", "\\\\")
                     .replace("'", "\\'")
                     .replace("\n", "\\n")
-                wv.evaluateJavascript("setTranslation($idx,'$escaped')", null)
+                wv.evaluateJavascript(
+                    "if (typeof setTranslation==='function'){setTranslation($idx,'$escaped');}",
+                    null
+                )
             }
         } else {
-            wv.evaluateJavascript("removeAllTranslations()", null)
+            wv.evaluateJavascript("if (typeof removeAllTranslations==='function'){removeAllTranslations();}", null)
         }
     }
     LaunchedEffect(extractCommandId) {
         val wv = webViewRef ?: return@LaunchedEffect
         if (extractCommandId == 0 || extractCommandId == lastHandledExtractCommandId) return@LaunchedEffect
-        if (isBilingualMode) wv.evaluateJavascript("extractParagraphs()", null)
+        if (isBilingualMode) {
+            wv.evaluateJavascript("if (typeof extractParagraphs==='function'){extractParagraphs();}", null)
+        }
         lastHandledExtractCommandId = extractCommandId
     }
 
@@ -396,7 +420,10 @@ function clearNativeSelection(){
         if (!isBilingualMode) return@LaunchedEffect
         translations.forEach { (idx, pair) ->
             val escaped = pair.translatedText.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-            wv.evaluateJavascript("setTranslation($idx,'$escaped')", null)
+            wv.evaluateJavascript(
+                "if (typeof setTranslation==='function'){setTranslation($idx,'$escaped');}",
+                null
+            )
         }
     }
     LaunchedEffect(seekCommandId, seekPage, seekProgress) {
@@ -417,6 +444,8 @@ function clearNativeSelection(){
             override fun startActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? = null
         }.apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
+            settings.allowFileAccess = true
+            setBackgroundColor(readerBackgroundColor(themeType))
             val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent): Boolean = true
 
@@ -460,7 +489,10 @@ function clearNativeSelection(){
                     onPageChangedState?.invoke(currentPage, total, progress)
                     if (isBilingualModeState) {
                         webViewRef?.post {
-                            webViewRef?.evaluateJavascript("extractParagraphs()", null)
+                            webViewRef?.evaluateJavascript(
+                                "if (typeof extractParagraphs==='function'){extractParagraphs();}",
+                                null
+                            )
                         }
                     }
                 }
@@ -488,23 +520,105 @@ function clearNativeSelection(){
                     onParagraphsExtracted(pairs)
                 }
             }, "Android")
-            webViewClient = WebViewClient()
+            webViewClient = object : WebViewClient() {
+                override fun onReceivedError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    error: WebResourceError
+                ) {
+                    super.onReceivedError(view, request, error)
+                    if (!request.isForMainFrame) return
+                    val signature = latestHtmlSignatureRef.get()
+                    if (lastRetrySignatureRef.get() == signature) return
+                    lastRetrySignatureRef.set(signature)
+                    val htmlForRetry = latestHtmlRef.get()
+                    if (htmlForRetry.isBlank()) return
+                    android.util.Log.w(
+                        "ReadAssistant",
+                        "WebView main-frame error (${error.errorCode} ${error.description}), retrying via utf8 fallback"
+                    )
+                    onPageRenderReadyState?.invoke(false)
+                    view.post {
+                        view.loadHtmlUtf8(htmlForRetry)
+                    }
+                }
+
+                override fun onPageCommitVisible(view: WebView, url: String?) {
+                    super.onPageCommitVisible(view, url)
+                    val signature = latestHtmlSignatureRef.get()
+                    if (readyNotifiedSignatureRef.get() == signature) return
+                    readyNotifiedSignatureRef.set(signature)
+                    onPageRenderReadyState?.invoke(true)
+                }
+
+                override fun onPageFinished(view: WebView, url: String?) {
+                    super.onPageFinished(view, url)
+                    val currentUrl = url.orEmpty()
+                    if (currentUrl.startsWith("chrome-error://")) {
+                        val signature = latestHtmlSignatureRef.get()
+                        if (lastRetrySignatureRef.get() == signature) return
+                        lastRetrySignatureRef.set(signature)
+                        val htmlForRetry = latestHtmlRef.get()
+                        if (htmlForRetry.isBlank()) return
+                        android.util.Log.w(
+                            "ReadAssistant",
+                            "WebView finished on chrome-error page, retrying via utf8 fallback"
+                        )
+                        onPageRenderReadyState?.invoke(false)
+                        view.post {
+                            view.loadHtmlUtf8(htmlForRetry)
+                        }
+                        return
+                    }
+                    // Fallback path for devices where onPageCommitVisible can be delayed.
+                    val signature = latestHtmlSignatureRef.get()
+                    if (readyNotifiedSignatureRef.get() == signature) return
+                    readyNotifiedSignatureRef.set(signature)
+                    onPageRenderReadyState?.invoke(true)
+                }
+            }
             webViewRef = this
         }
     }, update = { wv ->
+        wv.setBackgroundColor(readerBackgroundColor(themeType))
         val htmlSignature = 31 * html.hashCode() + html.length
         if (htmlSignature != lastLoadedHtmlSignature) {
             lastLoadedHtmlSignature = htmlSignature
+            latestHtmlRef.set(html)
+            latestHtmlSignatureRef.set(htmlSignature)
+            lastRetrySignatureRef.set(Int.MIN_VALUE)
+            readyNotifiedSignatureRef.set(Int.MIN_VALUE)
+            onPageRenderReadyState?.invoke(false)
             runCatching {
-                val htmlFile = File(wv.context.cacheDir, "reader_current_page.html")
-                htmlFile.writeText(html, Charsets.UTF_8)
-                wv.loadUrl("file://${htmlFile.absolutePath}")
+                wv.loadHtmlFromTempFile(html)
             }.getOrElse {
-                // Fallback for unexpected file I/O failures.
-                wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                // Retry once via UTF-8 if file load throws unexpectedly.
+                wv.loadHtmlUtf8(html)
             }
         }
     }, modifier = modifier)
+}
+
+private fun readerBackgroundColor(themeType: ReadingThemeType): Int = when (themeType) {
+    ReadingThemeType.LIGHT -> Color.parseColor("#FFFFFF")
+    ReadingThemeType.SEPIA -> Color.parseColor("#FBF0D9")
+    ReadingThemeType.DARK -> Color.parseColor("#1A1A2E")
+}
+
+private fun WebView.loadHtmlUtf8(html: String) {
+    loadDataWithBaseURL(
+        "https://reader.local/",
+        html,
+        "text/html",
+        "UTF-8",
+        null
+    )
+}
+
+private fun WebView.loadHtmlFromTempFile(html: String) {
+    val htmlFile = File(context.cacheDir, "reader_current_page.html")
+    htmlFile.writeText(html, Charsets.UTF_8)
+    loadUrl("file://${htmlFile.absolutePath}")
 }
 
 fun generateReaderCss(t: ReadingThemeType, fs: Float, lh: Float, pagedMode: Boolean = false): String {

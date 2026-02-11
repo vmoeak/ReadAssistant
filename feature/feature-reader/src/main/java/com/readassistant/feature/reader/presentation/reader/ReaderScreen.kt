@@ -33,6 +33,7 @@ import com.readassistant.core.domain.model.ContentType
 import com.readassistant.core.domain.model.SelectionRect
 import com.readassistant.core.ui.components.SelectionToolbar
 import com.readassistant.core.ui.theme.*
+import com.readassistant.feature.reader.presentation.renderer.NativeBookReader
 import com.readassistant.feature.chat.presentation.ChatBottomSheet
 import com.readassistant.feature.reader.presentation.renderer.WebViewReader
 import com.readassistant.feature.reader.presentation.toolbar.ReaderTopBar
@@ -63,6 +64,7 @@ fun ReaderScreen(
     var showNotesList by remember { mutableStateOf(false) }
     var showChaptersList by remember { mutableStateOf(false) }
     var showTopBar by remember { mutableStateOf(false) }
+    var webPageRenderReady by remember(uiState.contentType, uiState.contentId) { mutableStateOf(false) }
     var seekCommandId by remember { mutableStateOf(0) }
     var seekPage by remember { mutableStateOf<Int?>(null) }
     var seekProgress by remember { mutableStateOf<Float?>(null) }
@@ -79,7 +81,10 @@ fun ReaderScreen(
     LaunchedEffect(uiState.progressPercent, sliderDragging) {
         if (!sliderDragging) sliderValue = uiState.progressPercent.coerceIn(0f, 1f)
     }
-    val progressLabel = if (isBook) {
+    LaunchedEffect(uiState.htmlContent) {
+        if (uiState.htmlContent.isNotBlank()) webPageRenderReady = false
+    }
+    val progressLabel = if (isBook && uiState.bookParagraphs.isNotEmpty()) {
         val percent = (uiState.progressPercent * 100f).coerceIn(0f, 100f).roundToInt()
         if (uiState.totalChapters > 1) {
             "${uiState.currentChapterIndex + 1} / ${uiState.totalChapters}  $percent%"
@@ -95,29 +100,23 @@ fun ReaderScreen(
     ) { _ ->
         Box(Modifier.fillMaxSize()) {
             when {
-                uiState.isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 uiState.error != null -> Text(uiState.error!!, Modifier.align(Alignment.Center).padding(16.dp), color = MaterialTheme.colorScheme.error)
-                else -> WebViewReader(
-                    htmlContent = uiState.htmlContent, themeType = rtt, fontSize = fontSize,
-                    lineHeight = lineHeight, isBilingualMode = isBilingual,
+                isBook -> NativeBookReader(
+                    paragraphs = uiState.bookParagraphs,
+                    themeType = rtt,
+                    fontSize = fontSize,
+                    lineHeight = lineHeight,
+                    isBilingualMode = isBilingual,
                     translations = translations,
-                    onTextSelected = { viewModel.onTextSelected(it) },
-                    onProgressChanged = { viewModel.saveProgress(it) },
-                    onParagraphsExtracted = { paragraphs ->
-                        translationViewModel.translateParagraphs(paragraphs)
-                    },
-                    pagedMode = isBookContentType(uiState.contentType),
-                    onSwipeLeft = null,
-                    onSwipeRight = null,
-                    onPageChanged = if (isBookContentType(uiState.contentType)) ({ currentPage, totalPages, progress ->
-                        viewModel.onBookPageChanged(currentPage, totalPages, progress)
-                    }) else null,
-                    onChaptersExtracted = if (isBookContentType(uiState.contentType)) ({ chapters ->
-                        viewModel.onChaptersExtracted(chapters.map { ReaderChapter(it.first, it.second) })
-                    }) else null,
                     seekCommandId = seekCommandId,
-                    seekPage = seekPage,
+                    seekParagraphIndex = seekPage,
                     seekProgress = seekProgress,
+                    onProgressChanged = { currentIdx, total, progress ->
+                        viewModel.onBookPageChanged(currentIdx, total, progress)
+                    },
+                    onParagraphsVisible = { visible ->
+                        translationViewModel.translateParagraphs(visible)
+                    },
                     onSingleTap = {
                         if (uiState.showSelectionToolbar) {
                             viewModel.clearSelection()
@@ -129,6 +128,51 @@ fun ReaderScreen(
                         .fillMaxSize()
                         .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
                 )
+                else -> WebViewReader(
+                    htmlContent = if (uiState.isLoading) "<p></p>" else uiState.htmlContent,
+                    themeType = rtt, fontSize = fontSize,
+                    lineHeight = lineHeight, isBilingualMode = isBilingual,
+                    translations = translations,
+                    onTextSelected = { viewModel.onTextSelected(it) },
+                    onProgressChanged = { viewModel.saveProgress(it) },
+                    onParagraphsExtracted = { paragraphs ->
+                        translationViewModel.translateParagraphs(paragraphs)
+                    },
+                    onPageRenderReady = { ready -> webPageRenderReady = ready },
+                    pagedMode = false,
+                    onSwipeLeft = null,
+                    onSwipeRight = null,
+                    onPageChanged = null,
+                    onChaptersExtracted = null,
+                    seekCommandId = 0,
+                    seekPage = null,
+                    seekProgress = null,
+                    onSingleTap = {
+                        if (uiState.showSelectionToolbar) {
+                            viewModel.clearSelection()
+                        } else {
+                            showTopBar = !showTopBar
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
+                )
+            }
+            val showLoadingOverlay = uiState.error == null && !isBook && (
+                uiState.isLoading || (uiState.htmlContent.isNotBlank() && !webPageRenderReady)
+            )
+            if (showLoadingOverlay) {
+                Surface(
+                    color = rc.background,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
+                ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
             }
             AnimatedVisibility(
                 visible = showTopBar,

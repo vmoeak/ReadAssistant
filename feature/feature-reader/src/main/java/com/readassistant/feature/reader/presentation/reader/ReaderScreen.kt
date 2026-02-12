@@ -68,6 +68,8 @@ fun ReaderScreen(
     var seekCommandId by remember { mutableStateOf(0) }
     var seekPage by remember { mutableStateOf<Int?>(null) }
     var seekProgress by remember { mutableStateOf<Float?>(null) }
+    var paragraphToPageMap by remember(uiState.contentId) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
+    var initialSeekApplied by remember(uiState.contentId) { mutableStateOf(false) }
     var sliderValue by remember { mutableStateOf(0f) }
     var sliderDragging by remember { mutableStateOf(false) }
     var lastSelectionRect by remember { mutableStateOf<SelectionRect?>(null) }
@@ -81,6 +83,16 @@ fun ReaderScreen(
     LaunchedEffect(uiState.progressPercent, sliderDragging) {
         if (!sliderDragging) sliderValue = uiState.progressPercent.coerceIn(0f, 1f)
     }
+    LaunchedEffect(isBook, uiState.contentId, uiState.bookParagraphs.size, uiState.progressPercent) {
+        if (!isBook || uiState.bookParagraphs.isEmpty() || initialSeekApplied) return@LaunchedEffect
+        initialSeekApplied = true
+        val savedProgress = uiState.progressPercent.coerceIn(0f, 1f)
+        if (savedProgress > 0.001f) {
+            seekPage = null
+            seekProgress = savedProgress
+            seekCommandId += 1
+        }
+    }
     LaunchedEffect(uiState.htmlContent) {
         if (uiState.htmlContent.isNotBlank()) webPageRenderReady = false
     }
@@ -92,6 +104,11 @@ fun ReaderScreen(
             "$percent%"
         }
     } else null
+    val readerBottomInset = when {
+        isBook -> 112.dp
+        !progressLabel.isNullOrBlank() -> 56.dp
+        else -> 0.dp
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -114,6 +131,9 @@ fun ReaderScreen(
                     onProgressChanged = { currentIdx, total, progress ->
                         viewModel.onBookPageChanged(currentIdx, total, progress)
                     },
+                    onParagraphPageMapChanged = { map ->
+                        paragraphToPageMap = map
+                    },
                     onParagraphsVisible = { visible ->
                         translationViewModel.translateParagraphs(visible)
                     },
@@ -126,7 +146,7 @@ fun ReaderScreen(
                     },
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
+                        .padding(bottom = readerBottomInset)
                 )
                 else -> WebViewReader(
                     htmlContent = if (uiState.isLoading) "<p></p>" else uiState.htmlContent,
@@ -156,7 +176,7 @@ fun ReaderScreen(
                     },
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
+                        .padding(bottom = readerBottomInset)
                 )
             }
             val showLoadingOverlay = uiState.error == null && !isBook && (
@@ -167,7 +187,7 @@ fun ReaderScreen(
                     color = rc.background,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = if (!progressLabel.isNullOrBlank()) 34.dp else 0.dp)
+                        .padding(bottom = readerBottomInset)
                 ) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
@@ -393,9 +413,8 @@ fun ReaderScreen(
                     item { Text("No chapter headings found.", modifier = Modifier.padding(vertical = 12.dp)) }
                 } else {
                     items(uiState.chapters) { chapter ->
-                        ListItem(
-                            headlineContent = { Text(chapter.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            supportingContent = { Text("Page ${chapter.pageIndex + 1}") },
+                        val mappedPage = paragraphToPageMap[chapter.pageIndex]
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
@@ -404,7 +423,21 @@ fun ReaderScreen(
                                     seekCommandId += 1
                                     showChaptersList = false
                                 }
-                        )
+                                .padding(vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = chapter.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Page ${mappedPage?.plus(1) ?: "..."}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         HorizontalDivider()
                     }
                 }

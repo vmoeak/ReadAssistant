@@ -46,6 +46,7 @@ class ReaderViewModel @Inject constructor(
     )
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
     val themeType = userPreferences.themeType; val fontSize = userPreferences.fontSize; val lineHeight = userPreferences.lineHeight
+    private var pendingInitialBookProgress: Float? = null
 
     init {
         loadContent()
@@ -63,7 +64,17 @@ class ReaderViewModel @Inject constructor(
                     System.out.println("ReaderViewModel: NOTE: Loading RSS Article: ${a.title}, isRead=${a.isRead}")
                     android.util.Log.e("ReaderViewModel", "Loading RSS Article: ${a.title}, isRead=${a.isRead}")
                     val content = a.extractedContent?.ifEmpty { null } ?: a.content
-                    _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = content, contentType = ContentType.RSS_ARTICLE, contentId = contentIdLong) }
+                    val savedProgress = readSavedProgress(ContentType.RSS_ARTICLE.name, contentIdLong)
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            title = a.title,
+                            htmlContent = content,
+                            contentType = ContentType.RSS_ARTICLE,
+                            contentId = contentIdLong,
+                            progressPercent = savedProgress
+                        )
+                    }
                     if (!a.isRead) {
                         articleDao.updateReadStatus(contentIdLong, true)
                         val unreadCount = articleDao.getUnreadCount(a.feedId)
@@ -83,7 +94,17 @@ class ReaderViewModel @Inject constructor(
             "WEB_ARTICLE" -> {
                 val a = webArticleDao.getArticleById(contentIdLong)
                 if (a != null) {
-                    _uiState.update { it.copy(isLoading = false, title = a.title, htmlContent = a.content, contentType = ContentType.WEB_ARTICLE, contentId = contentIdLong) }
+                    val savedProgress = readSavedProgress(ContentType.WEB_ARTICLE.name, contentIdLong)
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            title = a.title,
+                            htmlContent = a.content,
+                            contentType = ContentType.WEB_ARTICLE,
+                            contentId = contentIdLong,
+                            progressPercent = savedProgress
+                        )
+                    }
                 } else {
                     _uiState.update { it.copy(isLoading = false, error = "Article not found") }
                 }
@@ -92,6 +113,8 @@ class ReaderViewModel @Inject constructor(
                 val b = bookDao.getBookById(contentIdLong)
                 if (b != null) {
                     val format = try { BookFormat.valueOf(b.format) } catch (_: Exception) { null }
+                    val contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB }
+                    val savedProgress = readSavedProgress(contentType.name, contentIdLong)
                     val memoryCached = BookParagraphCache.readMemoryCachedContent(
                         bookId = b.id,
                         fileSize = b.fileSize,
@@ -102,7 +125,8 @@ class ReaderViewModel @Inject constructor(
                             title = b.title,
                             formatName = b.format,
                             contentId = contentIdLong,
-                            structured = memoryCached
+                            structured = memoryCached,
+                            initialProgress = savedProgress
                         )
                     } else {
                         val structured = if (format != null) {
@@ -122,7 +146,8 @@ class ReaderViewModel @Inject constructor(
                             title = b.title,
                             formatName = b.format,
                             contentId = contentIdLong,
-                            structured = structured
+                            structured = structured,
+                            initialProgress = savedProgress
                         )
                     }
                 } else {
@@ -189,14 +214,22 @@ class ReaderViewModel @Inject constructor(
         title: String,
         formatName: String,
         contentId: Long,
-        structured: BookParagraphCache.CachedBookContent
+        structured: BookParagraphCache.CachedBookContent,
+        initialProgress: Float
     ) {
         val readerParagraphs = structured.paragraphs.mapIndexed { index, paragraph ->
-            ReaderParagraph(index = index, text = paragraph.text, isHeading = paragraph.isHeading)
+            ReaderParagraph(
+                index = index,
+                text = paragraph.text,
+                isHeading = paragraph.isHeading,
+                html = paragraph.html,
+                imageSrc = paragraph.imageSrc
+            )
         }
         val readerChapters = structured.chapters.map {
             ReaderChapter(title = it.title, pageIndex = it.paragraphIndex)
         }
+        pendingInitialBookProgress = initialProgress
         _uiState.update {
             it.copy(
                 isLoading = false,
@@ -207,7 +240,8 @@ class ReaderViewModel @Inject constructor(
                 contentId = contentId,
                 currentChapterIndex = 0,
                 totalChapters = readerParagraphs.size.coerceAtLeast(1),
-                chapters = readerChapters
+                chapters = readerChapters,
+                progressPercent = initialProgress.coerceIn(0f, 1f)
             )
         }
     }
@@ -216,11 +250,17 @@ class ReaderViewModel @Inject constructor(
     fun prevBookPage() {}
     fun nextBookPage() {}
     fun onBookPageChanged(currentPage: Int, totalPages: Int, progress: Float) {
+        val normalizedProgress = progress.coerceIn(0f, 1f)
+        val pendingProgress = pendingInitialBookProgress
+        if (pendingProgress != null && pendingProgress > 0.001f && normalizedProgress <= 0.0001f) {
+            return
+        }
+        pendingInitialBookProgress = null
         _uiState.update {
             it.copy(
                 currentChapterIndex = currentPage.coerceAtLeast(0),
                 totalChapters = totalPages.coerceAtLeast(1),
-                progressPercent = progress.coerceIn(0f, 1f)
+                progressPercent = normalizedProgress
             )
         }
         viewModelScope.launch {
@@ -263,6 +303,12 @@ class ReaderViewModel @Inject constructor(
     fun updateFontSize(s: Float) { viewModelScope.launch { userPreferences.setFontSize(s) } }
     fun updateLineHeight(h: Float) { viewModelScope.launch { userPreferences.setLineHeight(h) } }
     fun updateTheme(t: String) { viewModelScope.launch { userPreferences.setThemeType(t) } }
+
+    private suspend fun readSavedProgress(contentType: String, contentId: Long): Float {
+        return withContext(Dispatchers.IO) {
+            readingProgressDao.getProgress(contentType, contentId)?.progressPercent ?: 0f
+        }.coerceIn(0f, 1f)
+    }
 
     private fun isBookContentType(type: ContentType): Boolean = when (type) {
         ContentType.RSS_ARTICLE, ContentType.WEB_ARTICLE -> false

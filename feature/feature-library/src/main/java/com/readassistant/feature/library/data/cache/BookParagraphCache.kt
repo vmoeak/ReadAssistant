@@ -4,11 +4,12 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
 import java.io.File
 import java.util.LinkedHashMap
 
 object BookParagraphCache {
-    private const val CACHE_SCHEMA_VERSION = 1
+    private const val CACHE_SCHEMA_VERSION = 6
     private const val CACHE_DIR_NAME = "book_paragraph_cache"
     private const val MAX_MEMORY_BOOKS = 4
 
@@ -24,7 +25,9 @@ object BookParagraphCache {
 
     data class CachedParagraph(
         val text: String,
-        val isHeading: Boolean
+        val isHeading: Boolean,
+        val html: String = "",
+        val imageSrc: String? = null
     )
 
     data class CachedChapter(
@@ -76,27 +79,62 @@ object BookParagraphCache {
 
     fun buildFromHtml(html: String): CachedBookContent {
         val doc = Jsoup.parse(html)
-        doc.select("script,style,iframe").remove()
+        doc.select("script,style,iframe,noscript").remove()
+        val body = doc.body()
 
         val paragraphs = mutableListOf<CachedParagraph>()
         val chapters = mutableListOf<CachedChapter>()
-        val blockSelector = "h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,div"
-        val nestedBlockSelector = "p,h1,h2,h3,h4,h5,h6,li,blockquote,pre,table,ul,ol,div"
+        val blockSelector = "img,h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,figcaption,table,hr,div"
+        val nestedBlockSelector = "h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,table,figcaption,hr"
+        val ancestorBlockTags = setOf("h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre", "table", "figcaption", "hr")
 
-        doc.select(blockSelector).forEach { element ->
-            if (element.tagName().equals("div", ignoreCase = true) &&
-                element.selectFirst(nestedBlockSelector) != null
-            ) {
+        body.select(blockSelector).forEach { element ->
+            val tag = element.tagName().lowercase()
+            if (tag != "img") {
+                if (tag == "div" && element.selectFirst(nestedBlockSelector) != null) {
+                    return@forEach
+                }
+                val hasBlockAncestor = element.parents().any { parent ->
+                    parent != body && ancestorBlockTags.contains(parent.tagName().lowercase())
+                }
+                if (hasBlockAncestor) return@forEach
+            }
+            if (tag == "img") {
+                val src = element.attr("src").trim()
+                if (src.isBlank()) return@forEach
+                val alt = element.attr("alt")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+                val anchorHtml = buildAnchorMarkerHtml(element = element, body = body)
+                paragraphs += CachedParagraph(
+                    text = alt,
+                    isHeading = false,
+                    html = anchorHtml,
+                    imageSrc = src
+                )
                 return@forEach
             }
+
             val text = element.text()
                 .replace(Regex("\\s+"), " ")
                 .trim()
-            if (text.isBlank()) return@forEach
-            val isHeading = element.tagName().startsWith("h", ignoreCase = true)
+            val htmlBlock = element
+                .clone()
+                .apply { select("img").remove() }
+                .outerHtml()
+                .trim()
+            val inheritedAnchors = buildAncestorAnchorMarkerHtml(element = element, body = body)
+            val htmlWithAnchors = (inheritedAnchors + htmlBlock).trim()
+            if (text.isBlank() && htmlBlock.isBlank()) return@forEach
+            if (text.isBlank() && isNonVisualHtmlBlock(htmlWithAnchors)) return@forEach
+            val isHeading = tag.startsWith("h")
             val idx = paragraphs.size
-            paragraphs += CachedParagraph(text = text, isHeading = isHeading)
-            if (isHeading) {
+            paragraphs += CachedParagraph(
+                text = text,
+                isHeading = isHeading,
+                html = htmlWithAnchors
+            )
+            if (isHeading && text.isNotBlank()) {
                 chapters += CachedChapter(
                     title = text.take(120),
                     paragraphIndex = idx
@@ -105,11 +143,15 @@ object BookParagraphCache {
         }
 
         if (paragraphs.isEmpty()) {
-            val fallback = doc.body().text()
+            val fallback = body.text()
                 .replace(Regex("\\s+"), " ")
                 .trim()
             if (fallback.isNotBlank()) {
-                paragraphs += CachedParagraph(text = fallback, isHeading = false)
+                paragraphs += CachedParagraph(
+                    text = fallback,
+                    isHeading = false,
+                    html = body.html()
+                )
             }
         }
 
@@ -125,6 +167,8 @@ object BookParagraphCache {
                 JSONObject()
                     .put("text", paragraph.text)
                     .put("isHeading", paragraph.isHeading)
+                    .put("html", paragraph.html)
+                    .put("imageSrc", paragraph.imageSrc)
             )
         }
         val chaptersJson = JSONArray()
@@ -150,10 +194,14 @@ object BookParagraphCache {
             for (i in 0 until paragraphsJson.length()) {
                 val obj = paragraphsJson.optJSONObject(i) ?: continue
                 val text = obj.optString("text").trim()
-                if (text.isBlank()) continue
+                val html = obj.optString("html").trim()
+                val imageSrc = obj.optString("imageSrc").trim().ifBlank { null }
+                if (text.isBlank() && html.isBlank() && imageSrc.isNullOrBlank()) continue
                 paragraphs += CachedParagraph(
                     text = text,
-                    isHeading = obj.optBoolean("isHeading", false)
+                    isHeading = obj.optBoolean("isHeading", false),
+                    html = html,
+                    imageSrc = imageSrc
                 )
             }
 
@@ -195,5 +243,59 @@ object BookParagraphCache {
         synchronized(memoryCache) {
             memoryCache[key] = content
         }
+    }
+
+    private fun isNonVisualHtmlBlock(html: String): Boolean {
+        val fragment = Jsoup.parseBodyFragment(html)
+        if (fragment.select("[id],a[name]").isNotEmpty()) return false
+        fragment.select("br,a,span").remove()
+        val hasVisibleStructure = fragment.select("table,hr,blockquote,pre,ul,ol,li").isNotEmpty()
+        if (hasVisibleStructure) return false
+        val remainingText = fragment.body().text().trim()
+        return remainingText.isBlank()
+    }
+
+    private fun buildAnchorMarkerHtml(element: Element, body: Element): String {
+        val markers = linkedSetOf<String>()
+        markers += collectAnchorMarkers(element)
+        buildAncestorElements(element = element, body = body).forEach { ancestor ->
+            markers += collectAnchorMarkers(ancestor)
+        }
+        return markers.joinToString(separator = "")
+    }
+
+    private fun buildAncestorAnchorMarkerHtml(element: Element, body: Element): String {
+        val markers = linkedSetOf<String>()
+        buildAncestorElements(element = element, body = body).forEach { ancestor ->
+            markers += collectAnchorMarkers(ancestor)
+        }
+        return markers.joinToString(separator = "")
+    }
+
+    private fun buildAncestorElements(element: Element, body: Element): List<Element> {
+        return element.parents()
+            .takeWhile { it != body }
+            .asReversed()
+    }
+
+    private fun collectAnchorMarkers(element: Element): List<String> {
+        val markers = mutableListOf<String>()
+        val id = element.id().trim()
+        if (id.isNotBlank()) {
+            markers += """<a id="${escapeAttribute(id)}"></a>"""
+        }
+        val name = element.attr("name").trim()
+        if (name.isNotBlank()) {
+            markers += """<a name="${escapeAttribute(name)}"></a>"""
+        }
+        return markers
+    }
+
+    private fun escapeAttribute(value: String): String {
+        return value
+            .replace("&", "&amp;")
+            .replace("\"", "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
     }
 }

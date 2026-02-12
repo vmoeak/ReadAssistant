@@ -4,8 +4,7 @@ import android.content.Context
 import java.io.File
 
 object BookContentCache {
-    const val CACHE_SCHEMA_VERSION = 2
-    const val MAX_BOOK_HTML_CHARS = 8_000_000
+    const val CACHE_SCHEMA_VERSION = 5
     private const val CACHE_DIR_NAME = "book_content_cache"
 
     fun readCachedHtml(
@@ -33,11 +32,7 @@ object BookContentCache {
     }
 
     fun clampBookHtml(html: String): String {
-        if (html.length <= MAX_BOOK_HTML_CHARS) return html
-        return buildString(MAX_BOOK_HTML_CHARS + 256) {
-            append(html.take(MAX_BOOK_HTML_CHARS))
-            append("<p><em>Content truncated for performance.</em></p>")
-        }
+        return html
     }
 
     private fun buildCacheFile(

@@ -4,7 +4,7 @@ import android.content.Context
 import java.io.File
 
 object BookContentCache {
-    const val CACHE_SCHEMA_VERSION = 6
+    const val CACHE_SCHEMA_VERSION = 11
     private const val CACHE_DIR_NAME = "book_content_cache"
 
     fun readCachedHtml(

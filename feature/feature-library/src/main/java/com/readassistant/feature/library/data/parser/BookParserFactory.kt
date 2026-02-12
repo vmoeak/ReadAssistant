@@ -8,7 +8,7 @@ data class BookMetadata(val title: String, val author: String = "", val coverPat
 
 interface BookParser {
     suspend fun parseMetadata(filePath: String): BookMetadata
-    suspend fun extractContent(filePath: String, chapterIndex: Int = 0): String
+    suspend fun extractContent(filePath: String, chapterIndex: Int = 0, outputDir: String? = null): String
 }
 
 @Singleton

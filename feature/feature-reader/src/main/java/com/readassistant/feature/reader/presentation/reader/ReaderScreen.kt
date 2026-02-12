@@ -286,23 +286,15 @@ fun ReaderScreen(
                 }
             }
             if (!progressLabel.isNullOrBlank()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-                    shape = MaterialTheme.shapes.small,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp,
+                Text(
+                    text = progressLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .navigationBarsPadding()
-                        .padding(end = 10.dp, bottom = 6.dp)
-                ) {
-                    Text(
-                        text = progressLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
+                        .padding(end = 10.dp)
+                )
             }
             SelectionToolbar(
                 visible = uiState.showSelectionToolbar,

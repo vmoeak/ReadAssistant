@@ -7,5 +7,5 @@ class CbzCbrParser : BookParser {
         } else 0
         BookMetadata(title = filePath.substringAfterLast("/").substringBeforeLast("."), totalPages = pages)
     } catch (_: Exception) { BookMetadata(title = filePath.substringAfterLast("/").substringBeforeLast(".")) }
-    override suspend fun extractContent(filePath: String, chapterIndex: Int) = "<p>Comic rendering uses ImageReader.</p>"
+    override suspend fun extractContent(filePath: String, chapterIndex: Int, outputDir: String?) = "<p>Comic rendering uses ImageReader.</p>"
 }

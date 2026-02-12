@@ -26,7 +26,8 @@ class EpubParser : BookParser {
         zip.close(); BookMetadata(title = title, author = author)
     } catch (_: Throwable) { BookMetadata(title = filePath.substringAfterLast("/").substringBeforeLast(".")) }
 
-    override suspend fun extractContent(filePath: String, chapterIndex: Int): String {
+    override suspend fun extractContent(filePath: String, chapterIndex: Int, outputDir: String?): String {
+        android.util.Log.d("EpubParser", "extractContent: $filePath, outputDir=$outputDir")
         return try {
             val zip = ZipFile(filePath)
             val entryLookup = buildZipEntryLookup(zip)
@@ -101,7 +102,8 @@ class EpubParser : BookParser {
                         entryLookup = entryLookup,
                         baseDir = baseDir,
                         rawRef = src,
-                        epubFilePath = filePath
+                        epubFilePath = filePath,
+                        outputDir = outputDir
                     ) ?: return@forEach
                     img.attr("src", resolvedSrc)
                     img.removeAttr("srcset")
@@ -113,7 +115,8 @@ class EpubParser : BookParser {
                         entryLookup = entryLookup,
                         baseDir = baseDir,
                         rawRef = src,
-                        epubFilePath = filePath
+                        epubFilePath = filePath,
+                        outputDir = outputDir
                     ) ?: return@forEach
                     val replacement = Element("img")
                         .attr("src", resolvedSrc)
@@ -288,43 +291,66 @@ class EpubParser : BookParser {
         entryLookup: Map<String, String>,
         baseDir: String,
         rawRef: String,
-        epubFilePath: String
+        epubFilePath: String,
+        outputDir: String?
     ): String? {
-        val src = rawRef.trim()
+        val src = rawRef.trim().removePrefix("./")
         if (src.isBlank()) return null
+        android.util.Log.d("EpubParser", "Resolving image: src=$src, baseDir=$baseDir")
         if (src.startsWith("data:", ignoreCase = true)) return src
         if (src.startsWith("http://", ignoreCase = true) || src.startsWith("https://", ignoreCase = true)) {
             return src
         }
 
+        val fileName = src.substringAfterLast('/')
         val resolved = resolveZipPath(baseDir, src)
+        android.util.Log.d("EpubParser", "Resolved path: $resolved")
+        
         val imageEntry = resolveZipEntry(entryLookup, zip, resolved)
             ?: resolveZipEntry(entryLookup, zip, src)
-            ?: return null
+            ?: zip.entries().asSequence().find { it.name.endsWith("/$fileName", ignoreCase = true) || it.name.equals(fileName, ignoreCase = true) }
+            ?: zip.entries().asSequence().find { it.name.contains(fileName, ignoreCase = true) && !it.isDirectory }
+            
+        if (imageEntry == null) {
+            android.util.Log.w("EpubParser", "Image entry not found: $src (resolved: $resolved)")
+            return null
+        }
+        
+        android.util.Log.d("EpubParser", "Found entry: ${imageEntry.name}")
         val bytes = runCatching { zip.getInputStream(imageEntry).use { it.readBytes() } }.getOrNull()
             ?: return null
 
         return materializeImageFile(
             epubFilePath = epubFilePath,
             entryName = imageEntry.name,
-            bytes = bytes
+            bytes = bytes,
+            outputDir = outputDir
         )
     }
 
     private fun materializeImageFile(
         epubFilePath: String,
         entryName: String,
-        bytes: ByteArray
+        bytes: ByteArray,
+        outputDir: String?
     ): String? {
+        if (bytes.isEmpty()) return null
         return runCatching {
-            val parent = File(epubFilePath).parentFile ?: return null
-            val dir = File(parent, ".epub_images").apply { mkdirs() }
+            val dir = if (outputDir != null) {
+                File(outputDir, ".epub_images").apply { mkdirs() }
+            } else {
+                val parent = File(epubFilePath).parentFile ?: return null
+                File(parent, ".epub_images").apply { mkdirs() }
+            }
             val extension = entryName.substringAfterLast('.', missingDelimiterValue = "").lowercase().trim()
             val digest = sha1("$entryName:${bytes.size}")
-            val fileName = if (extension.isNotBlank()) "$digest.$extension" else digest
-            val output = File(dir, fileName)
+            val finalName = if (extension.isNotBlank()) "$digest.$extension" else digest
+            val output = File(dir, finalName)
+            
             if (!output.exists() || output.length() != bytes.size.toLong()) {
-                output.writeBytes(bytes)
+                val tempFile = File(dir, "$finalName.tmp")
+                tempFile.writeBytes(bytes)
+                tempFile.renameTo(output)
             }
             output.absolutePath
         }.getOrNull()

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -95,8 +97,8 @@ fun NativeBookReader(
     BoxWithConstraints(modifier = modifier) {
         val statusBarTopPadding = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
         val navBarBottomPadding = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
-        val topPadding = statusBarTopPadding + 24.dp
-        val bottomPadding = navBarBottomPadding + 8.dp
+        val topPadding = statusBarTopPadding + 16.dp
+        val bottomPadding = navBarBottomPadding + 4.dp
 
         val topContentPaddingPx = with(density) { topPadding.toPx() }
         val bottomContentPaddingPx = with(density) { bottomPadding.toPx() }
@@ -106,7 +108,7 @@ fun NativeBookReader(
         val horizontalPaddingPx = with(density) { 24.dp.toPx() * 2f }
         val contentWidthPx = (viewportWidthPx - horizontalPaddingPx).coerceAtLeast(220f)
         val contentHeightPx = (viewportHeightPx - topContentPaddingPx - bottomContentPaddingPx).coerceAtLeast(300f)
-        val maxImageHeightPx = (contentHeightPx * 0.78f).coerceAtLeast(with(density) { 220.dp.toPx() })
+        val maxImageHeightPx = (contentHeightPx * 0.72f).coerceAtLeast(with(density) { 200.dp.toPx() })
         val maxImageHeightDp = with(density) { maxImageHeightPx.toDp() }
 
         val entries = remember(paragraphs) { normalizeEntries(paragraphs) }
@@ -118,7 +120,8 @@ fun NativeBookReader(
                 fontSizePx = with(density) { fontSize.sp.toPx() },
                 lineHeight = lineHeight,
                 maxImageHeightPx = maxImageHeightPx,
-                paragraphGapPx = paragraphGapPx
+                paragraphGapPx = paragraphGapPx,
+                density = density.density
             )
         }
         val paragraphToPageMap = remember(pages) { buildParagraphToPageMap(pages) }
@@ -184,8 +187,8 @@ fun NativeBookReader(
             ) {
                 Column(
                     modifier = Modifier
-                        .align(Alignment.TopStart)
                         .fillMaxWidth()
+                        .fillMaxHeight()
                 ) {
                     page.items.forEachIndexed { idx, item ->
                         if (!item.imageSrc.isNullOrBlank()) {
@@ -201,9 +204,11 @@ fun NativeBookReader(
                                 .fillMaxWidth()
                                 .heightIn(min = 140.dp, max = maxImageHeightDp)
                                 .height(imageHeight)
+                            
                             val localBitmap = remember(item.imageSrc, contentWidthPx, maxImageHeightPx) {
                                 decodeImageBitmap(item.imageSrc, contentWidthPx.roundToInt(), maxImageHeightPx.roundToInt())
                             }
+                            
                             if (localBitmap != null) {
                                 Image(
                                     bitmap = localBitmap,
@@ -213,27 +218,54 @@ fun NativeBookReader(
                                 )
                             } else {
                                 val model = resolveImageModel(item.imageSrc)
-                                SubcomposeAsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(model)
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = item.text.ifBlank { null },
-                                    contentScale = ContentScale.Fit,
-                                    modifier = imageModifier
-                                ) {
-                                    when (painter.state) {
-                                        is AsyncImagePainter.State.Error -> {
-                                            Text(
-                                                text = "Image unavailable",
-                                                style = TextStyle(
-                                                    fontSize = (fontSize - 1f).coerceAtLeast(12f).sp,
-                                                    lineHeight = (((fontSize - 1f).coerceAtLeast(12f)) * lineHeight).sp,
-                                                    color = secondaryTextColor
-                                                )
-                                            )
+                                android.util.Log.d("NativeBookReader", "Loading image: src=${item.imageSrc}, model=$model")
+                                if (model != null) {
+                                    SubcomposeAsyncImage(
+                                        model = ImageRequest.Builder(context)
+                                            .data(model)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = item.text.ifBlank { null },
+                                        contentScale = ContentScale.Fit,
+                                        modifier = imageModifier
+                                    ) {
+                                        when (val state = painter.state) {
+                                            is AsyncImagePainter.State.Error -> {
+                                                android.util.Log.e("NativeBookReader", "Coil load failed for $model", state.result.throwable)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(40.dp)
+                                                        .background(readerColors.onBackground.copy(alpha = 0.05f)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = "Image unavailable",
+                                                        style = TextStyle(
+                                                            fontSize = (fontSize - 2f).coerceAtLeast(10f).sp,
+                                                            color = secondaryTextColor
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                            else -> SubcomposeAsyncImageContent()
                                         }
-                                        else -> SubcomposeAsyncImageContent()
+                                    }
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .background(readerColors.onBackground.copy(alpha = 0.05f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "Image unavailable (null src)",
+                                            style = TextStyle(
+                                                fontSize = (fontSize - 2f).coerceAtLeast(10f).sp,
+                                                color = secondaryTextColor
+                                            )
+                                        )
                                     }
                                 }
                             }
@@ -350,6 +382,9 @@ private fun normalizeEntries(paragraphs: List<ReaderParagraph>): List<Normalized
                     it.equals("img", ignoreCase = true) ||
                     it.equals("figure", ignoreCase = true)
             }.orEmpty()
+            
+            android.util.Log.d("NativeBookReader", "Normalized Image: index=${paragraph.index}, src=${paragraph.imageSrc}")
+            
             return@mapNotNull NormalizedEntry(
                 paragraphIndex = paragraph.index,
                 text = normalizedCaption,
@@ -366,7 +401,8 @@ private fun normalizeEntries(paragraphs: List<ReaderParagraph>): List<Normalized
 
         if (text.isBlank()) return@mapNotNull null
         if (!paragraph.isHeading && isGenericImageLabel(text)) return@mapNotNull null
-        NormalizedEntry(
+        
+        return@mapNotNull NormalizedEntry(
             paragraphIndex = paragraph.index,
             text = text,
             isHeading = paragraph.isHeading,
@@ -392,7 +428,8 @@ private fun paginateEntries(
     fontSizePx: Float,
     lineHeight: Float,
     maxImageHeightPx: Float,
-    paragraphGapPx: Float
+    paragraphGapPx: Float,
+    density: Float
 ): List<ReaderPage> {
     if (entries.isEmpty()) return emptyList()
 
@@ -411,53 +448,63 @@ private fun paginateEntries(
     entries.forEach { entry ->
         var pending = entry
         while (true) {
-
             val pendingHeight = measureEntryHeight(
                 entry = pending,
                 widthPx = contentWidthPx,
                 fontSizePx = fontSizePx,
                 lineHeight = lineHeight,
                 maxImageHeightPx = maxImageHeightPx,
-                paragraphGapPx = paragraphGapPx
+                paragraphGapPx = paragraphGapPx,
+                density = density
             )
 
-            if (current.isNotEmpty() && currentHeight + pendingHeight > contentHeightPx) {
-                val remaining = (contentHeightPx - currentHeight).coerceAtLeast(fontSizePx * 2.1f)
+            // If it's an image and doesn't fit, flush current page and put it on next
+            if (!pending.imageSrc.isNullOrBlank()) {
+                if (current.isNotEmpty() && currentHeight + pendingHeight + paragraphGapPx > contentHeightPx) {
+                    flush()
+                }
+                current += pending
+                currentHeight += pendingHeight + paragraphGapPx
+                break
+            }
+
+            // For text, check if it fits or needs splitting
+            if (currentHeight + pendingHeight <= contentHeightPx) {
+                current += pending
+                currentHeight += pendingHeight + paragraphGapPx
+                break
+            } else {
+                // Try to split the text to fill the remaining space exactly
+                val remainingHeight = contentHeightPx - currentHeight
                 val split = splitEntryByHeight(
                     entry = pending,
                     widthPx = contentWidthPx,
-                    availableHeightPx = remaining,
+                    availableHeightPx = remainingHeight - (paragraphGapPx * 0.5f),
                     fontSizePx = fontSizePx,
                     lineHeight = lineHeight
                 )
+
                 if (split != null) {
                     current += split.first
                     flush()
                     pending = split.second
+                    // Continue loop with the tail
                     continue
-                }
-                flush()
-            }
-
-            if (current.isEmpty() && pendingHeight > contentHeightPx) {
-                val split = splitEntryByHeight(
-                    entry = pending,
-                    widthPx = contentWidthPx,
-                    availableHeightPx = contentHeightPx,
-                    fontSizePx = fontSizePx,
-                    lineHeight = lineHeight
-                )
-                if (split != null) {
-                    current += split.first
-                    flush()
-                    pending = split.second
-                    continue
+                } else {
+                    // Could not split (e.g., first line doesn't even fit)
+                    if (current.isNotEmpty()) {
+                        flush()
+                        // Continue loop with the same pending entry on a fresh page
+                        continue
+                    } else {
+                        // On a fresh page and still doesn't fit? 
+                        // Force it in or split it even if it's the first line
+                        current += pending
+                        currentHeight += pendingHeight
+                        break
+                    }
                 }
             }
-
-            current += pending
-            currentHeight += pendingHeight
-            break
         }
     }
 
@@ -476,11 +523,11 @@ private fun splitEntryByHeight(
     if (entry.text.length < 2) return null
 
     val textSizePx = if (entry.isHeading) fontSizePx * 1.35f else fontSizePx
-    val spacingMult = if (entry.isHeading) 1.22f else lineHeight
+    val targetLineHeightPx = if (entry.isHeading) textSizePx * 1.24f else fontSizePx * lineHeight
     val layout = buildStaticLayout(
         text = entry.text,
         textSizePx = textSizePx,
-        lineSpacingMultiplier = spacingMult,
+        targetLineHeightPx = targetLineHeightPx,
         widthPx = widthPx.roundToInt().coerceAtLeast(120)
     )
     if (layout.lineCount <= 1) return null
@@ -511,37 +558,49 @@ private fun measureEntryHeight(
     fontSizePx: Float,
     lineHeight: Float,
     maxImageHeightPx: Float,
-    paragraphGapPx: Float
+    paragraphGapPx: Float,
+    density: Float
 ): Float {
     if (!entry.imageSrc.isNullOrBlank()) {
+        val aspect = resolveImageAspectRatio(entry.imageSrc)
+        val minHeightPx = 140f * density
+        val fallbackHeightPx = 280f * density
+        val imageHeightPx = if (aspect != null && aspect > 0f) {
+            (widthPx / aspect).coerceIn(minHeightPx, maxImageHeightPx)
+        } else {
+            maxImageHeightPx.coerceAtMost(fallbackHeightPx)
+        }
         val captionHeight = if (entry.text.isBlank()) 0f else fontSizePx * lineHeight * 1.2f
-        return (maxImageHeightPx * 0.72f) + captionHeight + paragraphGapPx
+        return imageHeightPx + captionHeight
     }
 
     val textSizePx = if (entry.isHeading) fontSizePx * 1.35f else fontSizePx
-    val spacingMult = if (entry.isHeading) 1.22f else lineHeight
+    val targetLineHeightPx = if (entry.isHeading) textSizePx * 1.24f else fontSizePx * lineHeight
     val layout = buildStaticLayout(
         text = entry.text,
         textSizePx = textSizePx,
-        lineSpacingMultiplier = spacingMult,
+        targetLineHeightPx = targetLineHeightPx,
         widthPx = widthPx.roundToInt().coerceAtLeast(120)
     )
-    return layout.height.toFloat() + paragraphGapPx
+    return layout.height.toFloat()
 }
 
 private fun buildStaticLayout(
     text: CharSequence,
     textSizePx: Float,
-    lineSpacingMultiplier: Float,
+    targetLineHeightPx: Float,
     widthPx: Int
 ): StaticLayout {
     val paint = TextPaint().apply {
         textSize = textSizePx
         isAntiAlias = true
     }
+    val fm = paint.fontMetrics
+    val naturalLineHeight = fm.descent - fm.ascent
+    val extraSpacing = (targetLineHeightPx - naturalLineHeight).coerceAtLeast(0f)
     return StaticLayout.Builder.obtain(text, 0, text.length, paint, widthPx)
         .setIncludePad(false)
-        .setLineSpacing(0f, lineSpacingMultiplier)
+        .setLineSpacing(extraSpacing, 1f)
         .build()
 }
 

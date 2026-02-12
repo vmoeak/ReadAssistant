@@ -44,7 +44,7 @@ class BookReadingRepository @Inject constructor(
                         fileSize = book.fileSize,
                         sourcePath = book.filePath
                     ) {
-                        parserFactory.getParser(format).extractContent(book.filePath)
+                        parserFactory.getParser(format).extractContent(book.filePath, outputDir = appContext.cacheDir.absolutePath)
                     } ?: return@runCatching
 
                     val chapters = runCatching { BookChapterCache.buildFromHtml(html) }.getOrNull()
@@ -73,7 +73,7 @@ class BookReadingRepository @Inject constructor(
                         fileSize = book.fileSize,
                         sourcePath = book.filePath
                     ) {
-                        parserFactory.getParser(format).extractContent(book.filePath)
+                        parserFactory.getParser(format).extractContent(book.filePath, outputDir = appContext.cacheDir.absolutePath)
                     } ?: return@runCatching
                     val parsed = runCatching { BookParagraphCache.buildFromHtml(html) }.getOrNull()
                         ?: return@runCatching
@@ -118,7 +118,8 @@ class BookReadingRepository @Inject constructor(
                             fileSize = book.fileSize,
                             sourcePath = book.filePath
                         ) {
-                            parserFactory.getParser(format).extractContent(book.filePath)
+                            android.util.Log.d("BookReadingRepository", "Calling parser for book ${book.id}")
+                            parserFactory.getParser(format).extractContent(book.filePath, outputDir = appContext.cacheDir.absolutePath)
                         } ?: return@loadParagraphContent null
                         runCatching { BookParagraphCache.buildFromHtml(html) }.getOrNull()
                     } ?: return@runCatching null

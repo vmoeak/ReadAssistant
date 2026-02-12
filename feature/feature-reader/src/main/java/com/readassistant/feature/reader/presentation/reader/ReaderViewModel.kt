@@ -10,10 +10,8 @@ import com.readassistant.core.data.db.entity.ReadingProgressEntity
 import com.readassistant.core.data.datastore.UserPreferences
 import com.readassistant.core.domain.model.ContentType
 import com.readassistant.core.domain.model.TextSelection
-import com.readassistant.feature.library.data.cache.BookContentCache
 import com.readassistant.feature.library.data.cache.BookParagraphCache
-import com.readassistant.feature.library.data.parser.BookParserFactory
-import com.readassistant.feature.library.domain.BookFormat
+import com.readassistant.feature.library.data.reading.BookReadingRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -24,13 +22,14 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
-    savedStateHandle: SavedStateHandle, private val articleDao: ArticleDao, private val bookDao: BookDao,
+    savedStateHandle: SavedStateHandle, private val articleDao: ArticleDao,
     private val webArticleDao: WebArticleDao, private val readingProgressDao: ReadingProgressDao,
     private val highlightDao: HighlightDao, private val noteDao: NoteDao, private val feedDao: FeedDao,
     private val userPreferences: UserPreferences,
-    private val bookParserFactory: BookParserFactory,
+    private val bookReadingRepository: BookReadingRepository,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+    private val bookPagePrefs = appContext.getSharedPreferences("reader_book_page_state", Context.MODE_PRIVATE)
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
     private val contentIdLong: Long = (savedStateHandle.get<String>("contentId") ?: "0").toLongOrNull() ?: 0L
     private val _uiState = MutableStateFlow(
@@ -47,6 +46,7 @@ class ReaderViewModel @Inject constructor(
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
     val themeType = userPreferences.themeType; val fontSize = userPreferences.fontSize; val lineHeight = userPreferences.lineHeight
     private var pendingInitialBookProgress: Float? = null
+    private var pendingInitialBookPageIndex: Int? = null
 
     init {
         loadContent()
@@ -61,8 +61,6 @@ class ReaderViewModel @Inject constructor(
             "RSS_ARTICLE" -> {
                 val a = articleDao.getArticleById(contentIdLong)
                 if (a != null) {
-                    System.out.println("ReaderViewModel: NOTE: Loading RSS Article: ${a.title}, isRead=${a.isRead}")
-                    android.util.Log.e("ReaderViewModel", "Loading RSS Article: ${a.title}, isRead=${a.isRead}")
                     val content = a.extractedContent?.ifEmpty { null } ?: a.content
                     val savedProgress = readSavedProgress(ContentType.RSS_ARTICLE.name, contentIdLong)
                     _uiState.update {
@@ -79,15 +77,8 @@ class ReaderViewModel @Inject constructor(
                         articleDao.updateReadStatus(contentIdLong, true)
                         val unreadCount = articleDao.getUnreadCount(a.feedId)
                         feedDao.updateUnreadCount(a.feedId, unreadCount)
-                        System.out.println("ReaderViewModel: NOTE: Marked read. Feed=${a.feedId}, NewCount=$unreadCount")
-                        android.util.Log.e("ReaderViewModel", "Marked as read. New unread count for feed ${a.feedId}: $unreadCount")
-                    } else {
-                        System.out.println("ReaderViewModel: NOTE: Already read")
-                        android.util.Log.e("ReaderViewModel", "Article already marked as read")
                     }
                 } else {
-                    System.out.println("ReaderViewModel: NOTE: Article with id $contentIdLong not found")
-                    android.util.Log.e("ReaderViewModel", "Article with id $contentIdLong not found")
                     _uiState.update { it.copy(isLoading = false, error = "Article not found") }
                 }
             }
@@ -110,112 +101,34 @@ class ReaderViewModel @Inject constructor(
                 }
             }
             "BOOK" -> {
-                val b = bookDao.getBookById(contentIdLong)
-                if (b != null) {
-                    val format = try { BookFormat.valueOf(b.format) } catch (_: Exception) { null }
-                    val contentType = try { ContentType.valueOf(b.format) } catch (_: Exception) { ContentType.EPUB }
+                val loaded = bookReadingRepository.loadBookForReading(contentIdLong)
+                if (loaded != null) {
+                    val contentType = try { ContentType.valueOf(loaded.formatName) } catch (_: Exception) { ContentType.EPUB }
                     val savedProgress = readSavedProgress(contentType.name, contentIdLong)
-                    val memoryCached = BookParagraphCache.readMemoryCachedContent(
-                        bookId = b.id,
-                        fileSize = b.fileSize,
-                        sourcePath = b.filePath
+                    val savedPageIndex = readSavedBookPageIndex(contentIdLong)
+                    applyBookContent(
+                        title = loaded.title,
+                        formatName = loaded.formatName,
+                        contentId = contentIdLong,
+                        structured = loaded.structured,
+                        initialProgress = savedProgress,
+                        initialPageIndex = savedPageIndex
                     )
-                    if (memoryCached != null) {
-                        applyBookContent(
-                            title = b.title,
-                            formatName = b.format,
-                            contentId = contentIdLong,
-                            structured = memoryCached,
-                            initialProgress = savedProgress
-                        )
-                    } else {
-                        val structured = if (format != null) {
-                            loadBookStructuredContentWithCache(b, format)
-                        } else {
-                            BookParagraphCache.CachedBookContent(
-                                paragraphs = listOf(
-                                    BookParagraphCache.CachedParagraph(
-                                        text = "Unsupported format: ${b.format}",
-                                        isHeading = false
-                                    )
-                                ),
-                                chapters = emptyList()
-                            )
-                        }
-                        applyBookContent(
-                            title = b.title,
-                            formatName = b.format,
-                            contentId = contentIdLong,
-                            structured = structured,
-                            initialProgress = savedProgress
-                        )
-                    }
                 } else {
                     _uiState.update { it.copy(isLoading = false, error = "Book not found") }
                 }
             }
             else -> _uiState.update { it.copy(isLoading = false, error = "Unknown content type") }
-        } } catch (e: Exception) { _uiState.update { it.copy(isLoading = false, error = e.message) } }
+        } } catch (e: Throwable) { _uiState.update { it.copy(isLoading = false, error = e.message) } }
     }}
-
-    private suspend fun loadBookContentWithCache(book: com.readassistant.core.data.db.entity.BookEntity, format: BookFormat): String {
-        return withContext(Dispatchers.IO) {
-            val cached = BookContentCache.readCachedHtml(
-                context = appContext,
-                bookId = book.id,
-                fileSize = book.fileSize,
-                sourcePath = book.filePath
-            )
-            if (cached != null) {
-                return@withContext cached
-            }
-
-            val parsed = BookContentCache.clampBookHtml(
-                bookParserFactory.getParser(format).extractContent(book.filePath)
-            )
-            BookContentCache.writeCachedHtml(
-                context = appContext,
-                bookId = book.id,
-                fileSize = book.fileSize,
-                sourcePath = book.filePath,
-                html = parsed
-            )
-            parsed
-        }
-    }
-
-    private suspend fun loadBookStructuredContentWithCache(
-        book: com.readassistant.core.data.db.entity.BookEntity,
-        format: BookFormat
-    ): BookParagraphCache.CachedBookContent {
-        return withContext(Dispatchers.IO) {
-            val cached = BookParagraphCache.readCachedContent(
-                context = appContext,
-                bookId = book.id,
-                fileSize = book.fileSize,
-                sourcePath = book.filePath
-            )
-            if (cached != null) return@withContext cached
-
-            val html = loadBookContentWithCache(book, format)
-            val parsed = BookParagraphCache.buildFromHtml(html)
-            BookParagraphCache.writeCachedContent(
-                context = appContext,
-                bookId = book.id,
-                fileSize = book.fileSize,
-                sourcePath = book.filePath,
-                content = parsed
-            )
-            parsed
-        }
-    }
 
     private fun applyBookContent(
         title: String,
         formatName: String,
         contentId: Long,
         structured: BookParagraphCache.CachedBookContent,
-        initialProgress: Float
+        initialProgress: Float,
+        initialPageIndex: Int?
     ) {
         val readerParagraphs = structured.paragraphs.mapIndexed { index, paragraph ->
             ReaderParagraph(
@@ -230,6 +143,7 @@ class ReaderViewModel @Inject constructor(
             ReaderChapter(title = it.title, pageIndex = it.paragraphIndex)
         }
         pendingInitialBookProgress = initialProgress
+        pendingInitialBookPageIndex = initialPageIndex?.coerceAtLeast(0)
         _uiState.update {
             it.copy(
                 isLoading = false,
@@ -241,7 +155,8 @@ class ReaderViewModel @Inject constructor(
                 currentChapterIndex = 0,
                 totalChapters = readerParagraphs.size.coerceAtLeast(1),
                 chapters = readerChapters,
-                progressPercent = initialProgress.coerceIn(0f, 1f)
+                progressPercent = initialProgress.coerceIn(0f, 1f),
+                savedBookPageIndex = initialPageIndex?.coerceAtLeast(0)
             )
         }
     }
@@ -251,11 +166,20 @@ class ReaderViewModel @Inject constructor(
     fun nextBookPage() {}
     fun onBookPageChanged(currentPage: Int, totalPages: Int, progress: Float) {
         val normalizedProgress = progress.coerceIn(0f, 1f)
+        val currentState = _uiState.value
+        if (currentState.bookParagraphs.isEmpty()) {
+            return
+        }
         val pendingProgress = pendingInitialBookProgress
+        val pendingPageIndex = pendingInitialBookPageIndex
+        if (pendingPageIndex != null && pendingPageIndex > 0 && currentPage <= 0) {
+            return
+        }
         if (pendingProgress != null && pendingProgress > 0.001f && normalizedProgress <= 0.0001f) {
             return
         }
         pendingInitialBookProgress = null
+        pendingInitialBookPageIndex = null
         _uiState.update {
             it.copy(
                 currentChapterIndex = currentPage.coerceAtLeast(0),
@@ -265,6 +189,7 @@ class ReaderViewModel @Inject constructor(
         }
         viewModelScope.launch {
             val s = _uiState.value
+            saveBookPageIndex(s.contentId, currentPage)
             readingProgressDao.upsert(
                 ReadingProgressEntity(
                     contentType = s.contentType.name,
@@ -310,8 +235,14 @@ class ReaderViewModel @Inject constructor(
         }.coerceIn(0f, 1f)
     }
 
-    private fun isBookContentType(type: ContentType): Boolean = when (type) {
-        ContentType.RSS_ARTICLE, ContentType.WEB_ARTICLE -> false
-        else -> true
+    private fun readSavedBookPageIndex(contentId: Long): Int? {
+        val page = bookPagePrefs.getInt("book_page_$contentId", -1)
+        return page.takeIf { it >= 0 }
     }
+
+    private fun saveBookPageIndex(contentId: Long, pageIndex: Int) {
+        if (contentId <= 0) return
+        bookPagePrefs.edit().putInt("book_page_$contentId", pageIndex.coerceAtLeast(0)).apply()
+    }
+
 }

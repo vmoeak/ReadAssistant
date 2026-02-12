@@ -11,5 +11,6 @@ data class ReaderUiState(
     val textSelection: TextSelection? = null, val showSelectionToolbar: Boolean = false,
     val showSettingsPanel: Boolean = false, val showChatSheet: Boolean = false, val isBilingualMode: Boolean = false, val error: String? = null,
     val notes: List<com.readassistant.core.data.db.entity.NoteWithHighlight> = emptyList(),
-    val chapters: List<ReaderChapter> = emptyList()
+    val chapters: List<ReaderChapter> = emptyList(),
+    val savedBookPageIndex: Int? = null
 )

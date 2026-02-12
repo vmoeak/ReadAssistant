@@ -1,15 +1,17 @@
 package com.readassistant.feature.library.data.cache
 
 import android.content.Context
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.io.BufferedWriter
 import java.io.File
 import java.util.LinkedHashMap
 
 object BookParagraphCache {
-    private const val CACHE_SCHEMA_VERSION = 6
+    private const val CACHE_SCHEMA_VERSION = 12
     private const val CACHE_DIR_NAME = "book_paragraph_cache"
     private const val MAX_MEMORY_BOOKS = 4
 
@@ -74,7 +76,13 @@ object BookParagraphCache {
         if (content.paragraphs.isEmpty()) return
         val cacheFile = buildCacheFile(context, bookId, fileSize, sourcePath)
         memoryPut(buildCacheName(bookId, fileSize, sourcePath), content)
-        runCatching { cacheFile.writeText(serialize(content), Charsets.UTF_8) }
+        runCatching {
+            cacheFile.outputStream().bufferedWriter(Charsets.UTF_8).use { writer ->
+                writeSerialized(writer, content)
+            }
+        }.onFailure { error ->
+            Log.w("BookParagraphCache", "write cache failed: ${cacheFile.name}", error)
+        }
     }
 
     fun buildFromHtml(html: String): CachedBookContent {
@@ -84,13 +92,15 @@ object BookParagraphCache {
 
         val paragraphs = mutableListOf<CachedParagraph>()
         val chapters = mutableListOf<CachedChapter>()
-        val blockSelector = "img,h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,figcaption,table,hr,div"
-        val nestedBlockSelector = "h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,table,figcaption,hr"
+        val blockSelector = "img,image,h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,figcaption,table,hr,div"
+        val nestedBlockSelector = "img,image,h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,table,figcaption,hr"
         val ancestorBlockTags = setOf("h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre", "table", "figcaption", "hr")
 
         body.select(blockSelector).forEach { element ->
             val tag = element.tagName().lowercase()
-            if (tag != "img") {
+            val isImageTag = tag == "img" || tag == "image"
+
+            if (!isImageTag) {
                 if (tag == "div" && element.selectFirst(nestedBlockSelector) != null) {
                     return@forEach
                 }
@@ -99,10 +109,17 @@ object BookParagraphCache {
                 }
                 if (hasBlockAncestor) return@forEach
             }
-            if (tag == "img") {
-                val src = element.attr("src").trim()
+
+            if (isImageTag) {
+                val src = extractImageSource(element)
                 if (src.isBlank()) return@forEach
-                val alt = element.attr("alt")
+                val alt = listOf(
+                    element.attr("alt"),
+                    element.attr("title"),
+                    element.attr("aria-label")
+                )
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
                     .replace(Regex("\\s+"), " ")
                     .trim()
                 val anchorHtml = buildAnchorMarkerHtml(element = element, body = body)
@@ -120,7 +137,7 @@ object BookParagraphCache {
                 .trim()
             val htmlBlock = element
                 .clone()
-                .apply { select("img").remove() }
+                .apply { select("img,image").remove() }
                 .outerHtml()
                 .trim()
             val inheritedAnchors = buildAncestorAnchorMarkerHtml(element = element, body = body)
@@ -158,30 +175,32 @@ object BookParagraphCache {
         return CachedBookContent(paragraphs = paragraphs, chapters = chapters)
     }
 
-    private fun serialize(content: CachedBookContent): String {
-        val root = JSONObject()
-            .put("schemaVersion", CACHE_SCHEMA_VERSION)
-        val paragraphsJson = JSONArray()
-        content.paragraphs.forEach { paragraph ->
-            paragraphsJson.put(
-                JSONObject()
-                    .put("text", paragraph.text)
-                    .put("isHeading", paragraph.isHeading)
-                    .put("html", paragraph.html)
-                    .put("imageSrc", paragraph.imageSrc)
-            )
+    private fun writeSerialized(writer: BufferedWriter, content: CachedBookContent) {
+        writer.append("{\"schemaVersion\":")
+        writer.append(CACHE_SCHEMA_VERSION.toString())
+        writer.append(",\"paragraphs\":[")
+        content.paragraphs.forEachIndexed { index, paragraph ->
+            if (index > 0) writer.append(',')
+            writer.append("{\"text\":")
+            writer.append(JSONObject.quote(paragraph.text))
+            writer.append(",\"isHeading\":")
+            writer.append(paragraph.isHeading.toString())
+            writer.append(",\"html\":")
+            writer.append(JSONObject.quote(paragraph.html))
+            writer.append(",\"imageSrc\":")
+            writer.append(paragraph.imageSrc?.let(JSONObject::quote) ?: "null")
+            writer.append('}')
         }
-        val chaptersJson = JSONArray()
-        content.chapters.forEach { chapter ->
-            chaptersJson.put(
-                JSONObject()
-                    .put("title", chapter.title)
-                    .put("paragraphIndex", chapter.paragraphIndex)
-            )
+        writer.append("],\"chapters\":[")
+        content.chapters.forEachIndexed { index, chapter ->
+            if (index > 0) writer.append(',')
+            writer.append("{\"title\":")
+            writer.append(JSONObject.quote(chapter.title))
+            writer.append(",\"paragraphIndex\":")
+            writer.append(chapter.paragraphIndex.toString())
+            writer.append('}')
         }
-        root.put("paragraphs", paragraphsJson)
-        root.put("chapters", chaptersJson)
-        return root.toString()
+        writer.append("]}")
     }
 
     private fun parse(raw: String): CachedBookContent? {
@@ -289,6 +308,31 @@ object BookParagraphCache {
             markers += """<a name="${escapeAttribute(name)}"></a>"""
         }
         return markers
+    }
+
+    private fun extractImageSource(element: Element): String {
+        val candidates = listOf(
+            element.attr("src"),
+            element.attr("data-src"),
+            element.attr("data-original"),
+            element.attr("data-lazy-src"),
+            extractFirstSrcFromSrcSet(element.attr("srcset")),
+            element.attr("href"),
+            element.attr("xlink:href")
+        )
+        return candidates
+            .asSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() }
+            .orEmpty()
+    }
+
+    private fun extractFirstSrcFromSrcSet(srcSet: String): String {
+        if (srcSet.isBlank()) return ""
+        return srcSet.substringBefore(',')
+            .trim()
+            .substringBefore(' ')
+            .trim()
     }
 
     private fun escapeAttribute(value: String): String {

@@ -2,45 +2,53 @@ package com.readassistant.feature.library.data.parser
 
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import org.jsoup.parser.Parser
+import java.io.File
 import java.net.URLDecoder
-import java.util.Base64
+import java.security.MessageDigest
+import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 
 class EpubParser : BookParser {
     override suspend fun parseMetadata(filePath: String): BookMetadata = try {
         val zip = ZipFile(filePath)
+        val entryLookup = buildZipEntryLookup(zip)
         var title = filePath.substringAfterLast("/").substringBeforeLast(".")
         var author = ""
-        val opf = zip.entries().asSequence().find { it.name.endsWith(".opf") }
-        if (opf != null) {
-            val c = zip.getInputStream(opf).bufferedReader().readText()
+        val opfEntry = zip.entries().asSequence().firstOrNull { it.name.endsWith(".opf", ignoreCase = true) }
+            ?: resolveZipEntry(entryLookup, zip, "content.opf")
+        if (opfEntry != null) {
+            val c = zip.getInputStream(opfEntry).bufferedReader().readText()
             Regex("<dc:title[^>]*>([^<]+)</dc:title>").find(c)?.let { title = it.groupValues[1] }
             Regex("<dc:creator[^>]*>([^<]+)</dc:creator>").find(c)?.let { author = it.groupValues[1] }
         }
         zip.close(); BookMetadata(title = title, author = author)
-    } catch (_: Exception) { BookMetadata(title = filePath.substringAfterLast("/").substringBeforeLast(".")) }
+    } catch (_: Throwable) { BookMetadata(title = filePath.substringAfterLast("/").substringBeforeLast(".")) }
 
     override suspend fun extractContent(filePath: String, chapterIndex: Int): String {
         return try {
             val zip = ZipFile(filePath)
+            val entryLookup = buildZipEntryLookup(zip)
 
             val containerPath = "META-INF/container.xml"
-            val containerEntry = zip.getEntry(containerPath)
+            val containerEntry = resolveZipEntry(entryLookup, zip, containerPath)
             val rootOpfPath = if (containerEntry != null) {
                 val containerXml = zip.getInputStream(containerEntry).bufferedReader().use { it.readText() }
                 Regex("""full-path\s*=\s*["']([^"']+)["']""").find(containerXml)?.groupValues?.get(1)
             } else null
 
-            val opfPath = rootOpfPath
-                ?: zip.entries().asSequence().find { it.name.endsWith(".opf", ignoreCase = true) }?.name
+            val opfEntry = rootOpfPath
+                ?.let { resolveZipEntry(entryLookup, zip, it) }
+                ?: zip.entries().asSequence().find { it.name.endsWith(".opf", ignoreCase = true) }
 
-            if (opfPath == null) {
+            if (opfEntry == null) {
                 zip.close()
                 return "<p>EPUB metadata not found.</p>"
             }
 
-            val opfText = zip.getInputStream(zip.getEntry(opfPath)).bufferedReader().use { it.readText() }
+            val opfPath = opfEntry.name
+            val opfText = zip.getInputStream(opfEntry).bufferedReader().use { it.readText() }
             val opfBase = opfPath.substringBeforeLast("/", missingDelimiterValue = "")
 
             val manifest = parseManifest(opfText)
@@ -49,12 +57,10 @@ class EpubParser : BookParser {
                 .mapNotNull { idref ->
                     val href = manifest[idref] ?: return@mapNotNull null
                     val resolved = resolveZipPath(opfBase, href)
-                    when {
-                        zip.getEntry(resolved) != null -> resolved
-                        zip.getEntry(href) != null -> href
-                        else -> null
-                    }
+                    resolveZipEntryName(entryLookup, resolved)
+                        ?: resolveZipEntryName(entryLookup, href)
                 }
+                .distinct()
                 .toList()
 
             val targetEntries = if (orderedContentPaths.isNotEmpty()) {
@@ -68,34 +74,54 @@ class EpubParser : BookParser {
                     .sorted()
                     .toList()
             }
-            val entryPrefix = targetEntries.mapIndexed { index, path ->
-                path to "s$index"
-            }.toMap()
+            val entryPrefix = mutableMapOf<String, String>()
+            targetEntries.forEachIndexed { index, path ->
+                val prefix = "s$index"
+                entryPrefix[path] = prefix
+                entryPrefix[normalizeZipEntryKey(path)] = prefix
+            }
 
             val htmlParts = targetEntries.mapNotNull { entryPath ->
-                val entry = zip.getEntry(entryPath) ?: return@mapNotNull null
+                val entry = resolveZipEntry(entryLookup, zip, entryPath) ?: return@mapNotNull null
                 val raw = zip.getInputStream(entry).bufferedReader().use { it.readText() }
                 val doc = Jsoup.parse(raw)
                 doc.select("script,style,iframe").remove()
                 rewriteDocumentAnchors(
                     doc = doc,
-                    currentEntryPath = entryPath,
-                    currentPrefix = entryPrefix[entryPath].orEmpty(),
+                    currentEntryPath = entry.name,
+                    currentPrefix = entryPrefix[entry.name].orEmpty(),
                     entryPrefix = entryPrefix
                 )
-                val baseDir = entryPath.substringBeforeLast("/", missingDelimiterValue = "")
-                doc.select("img[src]").forEach { img ->
-                    val src = img.attr("src").trim()
-                    if (src.isBlank()) return@forEach
-                    if (src.startsWith("data:", ignoreCase = true)) return@forEach
-                    if (src.startsWith("http://", ignoreCase = true) || src.startsWith("https://", ignoreCase = true)) return@forEach
-                    val resolved = resolveZipPath(baseDir, src)
-                    val imageEntry = zip.getEntry(resolved) ?: return@forEach
-                    val bytes = runCatching { zip.getInputStream(imageEntry).use { it.readBytes() } }.getOrNull()
-                        ?: return@forEach
-                    val mime = guessMimeType(imageEntry.name)
-                    val b64 = Base64.getEncoder().encodeToString(bytes)
-                    img.attr("src", "data:$mime;base64,$b64")
+                val baseDir = entry.name.substringBeforeLast("/", missingDelimiterValue = "")
+
+                doc.select("img").forEach { img ->
+                    val src = extractImageRef(img)
+                    val resolvedSrc = resolveImageSource(
+                        zip = zip,
+                        entryLookup = entryLookup,
+                        baseDir = baseDir,
+                        rawRef = src,
+                        epubFilePath = filePath
+                    ) ?: return@forEach
+                    img.attr("src", resolvedSrc)
+                    img.removeAttr("srcset")
+                }
+                doc.select("image").forEach { imageNode ->
+                    val src = extractImageRef(imageNode)
+                    val resolvedSrc = resolveImageSource(
+                        zip = zip,
+                        entryLookup = entryLookup,
+                        baseDir = baseDir,
+                        rawRef = src,
+                        epubFilePath = filePath
+                    ) ?: return@forEach
+                    val replacement = Element("img")
+                        .attr("src", resolvedSrc)
+                    val alt = imageNode.attr("aria-label").trim()
+                    if (alt.isNotBlank()) {
+                        replacement.attr("alt", alt)
+                    }
+                    imageNode.replaceWith(replacement)
                 }
 
                 val body = doc.body().html().trim()
@@ -104,7 +130,7 @@ class EpubParser : BookParser {
 
             zip.close()
             if (htmlParts.isEmpty()) "<p>No readable EPUB content found.</p>" else htmlParts.joinToString("\n")
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             "<p>Error reading EPUB.</p>"
         }
     }
@@ -152,7 +178,9 @@ class EpubParser : BookParser {
             val targetId = href.substringAfter('#').trim()
             if (targetId.isBlank()) return@forEach
             val resolvedTarget = resolveZipPath(baseDir, targetPathRaw)
-            val targetPrefix = entryPrefix[resolvedTarget] ?: return@forEach
+            val targetPrefix = entryPrefix[resolvedTarget]
+                ?: entryPrefix[normalizeZipEntryKey(resolvedTarget)]
+                ?: return@forEach
             anchor.attr("href", "#${targetPrefix}__${targetId}")
         }
     }
@@ -230,15 +258,118 @@ class EpubParser : BookParser {
             .toList()
     }
 
-    private fun guessMimeType(name: String): String {
-        val lower = name.lowercase()
-        return when {
-            lower.endsWith(".png") -> "image/png"
-            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
-            lower.endsWith(".gif") -> "image/gif"
-            lower.endsWith(".webp") -> "image/webp"
-            lower.endsWith(".svg") -> "image/svg+xml"
-            else -> "image/*"
+    private fun extractImageRef(element: Element): String {
+        val candidates = listOf(
+            element.attr("src"),
+            element.attr("data-src"),
+            element.attr("data-original"),
+            element.attr("data-lazy-src"),
+            extractFirstSrcFromSrcSet(element.attr("srcset")),
+            element.attr("href"),
+            element.attr("xlink:href")
+        )
+        return candidates
+            .asSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() }
+            .orEmpty()
+    }
+
+    private fun extractFirstSrcFromSrcSet(srcSet: String): String {
+        if (srcSet.isBlank()) return ""
+        return srcSet.substringBefore(',')
+            .trim()
+            .substringBefore(' ')
+            .trim()
+    }
+
+    private fun resolveImageSource(
+        zip: ZipFile,
+        entryLookup: Map<String, String>,
+        baseDir: String,
+        rawRef: String,
+        epubFilePath: String
+    ): String? {
+        val src = rawRef.trim()
+        if (src.isBlank()) return null
+        if (src.startsWith("data:", ignoreCase = true)) return src
+        if (src.startsWith("http://", ignoreCase = true) || src.startsWith("https://", ignoreCase = true)) {
+            return src
         }
+
+        val resolved = resolveZipPath(baseDir, src)
+        val imageEntry = resolveZipEntry(entryLookup, zip, resolved)
+            ?: resolveZipEntry(entryLookup, zip, src)
+            ?: return null
+        val bytes = runCatching { zip.getInputStream(imageEntry).use { it.readBytes() } }.getOrNull()
+            ?: return null
+
+        return materializeImageFile(
+            epubFilePath = epubFilePath,
+            entryName = imageEntry.name,
+            bytes = bytes
+        )
+    }
+
+    private fun materializeImageFile(
+        epubFilePath: String,
+        entryName: String,
+        bytes: ByteArray
+    ): String? {
+        return runCatching {
+            val parent = File(epubFilePath).parentFile ?: return null
+            val dir = File(parent, ".epub_images").apply { mkdirs() }
+            val extension = entryName.substringAfterLast('.', missingDelimiterValue = "").lowercase().trim()
+            val digest = sha1("$entryName:${bytes.size}")
+            val fileName = if (extension.isNotBlank()) "$digest.$extension" else digest
+            val output = File(dir, fileName)
+            if (!output.exists() || output.length() != bytes.size.toLong()) {
+                output.writeBytes(bytes)
+            }
+            output.absolutePath
+        }.getOrNull()
+    }
+
+    private fun buildZipEntryLookup(zip: ZipFile): Map<String, String> {
+        val lookup = linkedMapOf<String, String>()
+        zip.entries().asSequence().forEach { entry ->
+            lookup.putIfAbsent(normalizeZipEntryKey(entry.name), entry.name)
+        }
+        return lookup
+    }
+
+    private fun resolveZipEntryName(entryLookup: Map<String, String>, rawPath: String): String? {
+        val key = normalizeZipEntryKey(rawPath)
+        return entryLookup[key]
+    }
+
+    private fun resolveZipEntry(entryLookup: Map<String, String>, zip: ZipFile, rawPath: String): ZipEntry? {
+        val name = resolveZipEntryName(entryLookup, rawPath) ?: return null
+        return zip.getEntry(name)
+    }
+
+    private fun normalizeZipEntryKey(path: String): String {
+        val trimmed = path.trim().replace('\\', '/').trimStart('/')
+        if (trimmed.isBlank()) return ""
+        val decoded = runCatching { URLDecoder.decode(trimmed, Charsets.UTF_8.name()) }.getOrDefault(trimmed)
+        val normalized = decoded
+            .replace('\\', '/')
+            .split('/')
+            .fold(mutableListOf<String>()) { acc, part ->
+                when (part) {
+                    "", "." -> Unit
+                    ".." -> if (acc.isNotEmpty()) acc.removeAt(acc.lastIndex)
+                    else -> acc += part
+                }
+                acc
+            }
+            .joinToString("/")
+        return normalized.lowercase()
+    }
+
+    private fun sha1(value: String): String {
+        val md = MessageDigest.getInstance("SHA-1")
+        val bytes = md.digest(value.toByteArray(Charsets.UTF_8))
+        return bytes.joinToString(separator = "") { "%02x".format(it) }
     }
 }

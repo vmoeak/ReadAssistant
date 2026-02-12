@@ -66,7 +66,8 @@ fun ReaderScreen(
     var showTopBar by remember { mutableStateOf(false) }
     var webPageRenderReady by remember(uiState.contentType, uiState.contentId) { mutableStateOf(false) }
     var seekCommandId by remember { mutableStateOf(0) }
-    var seekPage by remember { mutableStateOf<Int?>(null) }
+    var seekParagraphIndex by remember { mutableStateOf<Int?>(null) }
+    var seekPageIndex by remember { mutableStateOf<Int?>(null) }
     var seekProgress by remember { mutableStateOf<Float?>(null) }
     var paragraphToPageMap by remember(uiState.contentId) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     var initialSeekApplied by remember(uiState.contentId) { mutableStateOf(false) }
@@ -83,12 +84,20 @@ fun ReaderScreen(
     LaunchedEffect(uiState.progressPercent, sliderDragging) {
         if (!sliderDragging) sliderValue = uiState.progressPercent.coerceIn(0f, 1f)
     }
-    LaunchedEffect(isBook, uiState.contentId, uiState.bookParagraphs.size, uiState.progressPercent) {
+    LaunchedEffect(isBook, uiState.contentId, uiState.bookParagraphs.size, uiState.progressPercent, uiState.savedBookPageIndex) {
         if (!isBook || uiState.bookParagraphs.isEmpty() || initialSeekApplied) return@LaunchedEffect
         initialSeekApplied = true
-        val savedProgress = uiState.progressPercent.coerceIn(0f, 1f)
-        if (savedProgress > 0.001f) {
-            seekPage = null
+        val savedPageIndex = uiState.savedBookPageIndex
+        if (savedPageIndex != null && savedPageIndex >= 0) {
+            seekPageIndex = savedPageIndex
+            seekParagraphIndex = null
+            seekProgress = null
+            seekCommandId += 1
+        } else {
+            val savedProgress = uiState.progressPercent.coerceIn(0f, 1f)
+            if (savedProgress <= 0.001f) return@LaunchedEffect
+            seekPageIndex = null
+            seekParagraphIndex = null
             seekProgress = savedProgress
             seekCommandId += 1
         }
@@ -105,8 +114,7 @@ fun ReaderScreen(
         }
     } else null
     val readerBottomInset = when {
-        isBook -> 112.dp
-        !progressLabel.isNullOrBlank() -> 56.dp
+        !isBook && showTopBar -> 72.dp
         else -> 0.dp
     }
 
@@ -126,7 +134,8 @@ fun ReaderScreen(
                     isBilingualMode = isBilingual,
                     translations = translations,
                     seekCommandId = seekCommandId,
-                    seekParagraphIndex = seekPage,
+                    seekParagraphIndex = seekParagraphIndex,
+                    seekPageIndex = seekPageIndex,
                     seekProgress = seekProgress,
                     onProgressChanged = { currentIdx, total, progress ->
                         viewModel.onBookPageChanged(currentIdx, total, progress)
@@ -144,9 +153,9 @@ fun ReaderScreen(
                             showTopBar = !showTopBar
                         }
                     },
+                    isControlsVisible = showTopBar,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = readerBottomInset)
                 )
                 else -> WebViewReader(
                     htmlContent = if (uiState.isLoading) "<p></p>" else uiState.htmlContent,
@@ -256,7 +265,8 @@ fun ReaderScreen(
                                 .padding(start = 8.dp),
                             onValueChangeFinished = {
                                 sliderDragging = false
-                                seekPage = null
+                                seekPageIndex = null
+                                seekParagraphIndex = null
                                 seekProgress = sliderValue
                                 seekCommandId += 1
                             },
@@ -418,8 +428,9 @@ fun ReaderScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
+                                    seekPageIndex = null
                                     seekProgress = null
-                                    seekPage = chapter.pageIndex
+                                    seekParagraphIndex = chapter.pageIndex
                                     seekCommandId += 1
                                     showChaptersList = false
                                 }

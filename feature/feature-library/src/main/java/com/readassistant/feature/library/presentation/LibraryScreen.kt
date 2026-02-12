@@ -1,6 +1,5 @@
 package com.readassistant.feature.library.presentation
 
-import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
@@ -17,12 +16,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.readassistant.core.data.db.dao.BookDao
 import com.readassistant.core.data.db.entity.BookEntity
-import com.readassistant.feature.library.data.cache.BookContentCache
-import com.readassistant.feature.library.data.cache.BookParagraphCache
-import com.readassistant.feature.library.data.parser.BookParserFactory
-import com.readassistant.feature.library.domain.BookFormat
+import com.readassistant.feature.library.data.reading.BookReadingRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -31,9 +26,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
-    @ApplicationContext private val appContext: Context,
     private val bookDao: BookDao,
-    private val parserFactory: BookParserFactory
+    private val bookReadingRepository: BookReadingRepository
 ) : ViewModel() {
     private val prewarmedIds = mutableSetOf<Long>()
     private val booksFlow = bookDao.getAllBooks()
@@ -51,40 +45,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     private suspend fun prewarmBookContentCache(book: BookEntity) = withContext(Dispatchers.IO) {
-        val paragraphCached = BookParagraphCache.readCachedContent(
-            context = appContext,
-            bookId = book.id,
-            fileSize = book.fileSize,
-            sourcePath = book.filePath
-        )
-        if (paragraphCached != null) return@withContext
-
-        val format = runCatching { BookFormat.valueOf(book.format) }.getOrNull() ?: return@withContext
-        val cached = BookContentCache.readCachedHtml(
-            context = appContext,
-            bookId = book.id,
-            fileSize = book.fileSize,
-            sourcePath = book.filePath
-        )
-        val html = cached ?: runCatching { parserFactory.getParser(format).extractContent(book.filePath) }.getOrNull()
-            ?: return@withContext
-        if (cached == null) {
-            BookContentCache.writeCachedHtml(
-                context = appContext,
-                bookId = book.id,
-                fileSize = book.fileSize,
-                sourcePath = book.filePath,
-                html = html
-            )
-        }
-        val parsed = BookParagraphCache.buildFromHtml(html)
-        BookParagraphCache.writeCachedContent(
-            context = appContext,
-            bookId = book.id,
-            fileSize = book.fileSize,
-            sourcePath = book.filePath,
-            content = parsed
-        )
+        runCatching { bookReadingRepository.prewarm(book.id) }
     }
 
     suspend fun prepareBookForOpen(bookId: Long) = withContext(Dispatchers.IO) {
@@ -97,8 +58,6 @@ class LibraryViewModel @Inject constructor(
 @Composable
 fun LibraryScreen(onBookClick: (Long) -> Unit, onImportClick: () -> Unit, viewModel: LibraryViewModel = hiltViewModel()) {
     val books by viewModel.books.collectAsState()
-    val scope = rememberCoroutineScope()
-    var openingBookId by remember { mutableStateOf<Long?>(null) }
     Scaffold(topBar = { TopAppBar(title = { Text("Library") }) }, floatingActionButton = { FloatingActionButton(onClick = onImportClick) { Icon(Icons.Default.Add, contentDescription = "Import") } }) { padding ->
         if (books.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -107,28 +66,24 @@ fun LibraryScreen(onBookClick: (Long) -> Unit, onImportClick: () -> Unit, viewMo
         } else {
             LazyVerticalGrid(columns = GridCells.Adaptive(120.dp), contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize().padding(padding)) {
                 items(books, key = { it.id }) { book ->
-                    val isOpening = openingBookId == book.id
                     Card(
                         Modifier
                             .fillMaxWidth()
                             .aspectRatio(0.65f)
-                            .clickable(enabled = !isOpening) {
-                                scope.launch {
-                                    openingBookId = book.id
-                                    runCatching { viewModel.prepareBookForOpen(book.id) }
-                                    onBookClick(book.id)
-                                    openingBookId = null
-                                }
-                            }
+                            .clickable { onBookClick(book.id) }
                     ) {
                         Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
-                            if (isOpening) {
-                                CircularProgressIndicator(modifier = Modifier.size(28.dp))
-                            } else {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.Book, null, Modifier.size(32.dp))
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(book.title, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Default.Book, null, Modifier.size(32.dp))
+                                Spacer(Modifier.height(8.dp))
+                                Text(book.title, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                if (book.author.isNotBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(book.author, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (book.totalChapters > 0) {
+                                    Spacer(Modifier.height(2.dp))
+                                    Text("${book.totalChapters} chapters", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }

@@ -51,7 +51,7 @@ class ReaderViewModel @Inject constructor(
     init {
         loadContent()
         viewModelScope.launch {
-            noteDao.getNotesByContent(contentTypeStr, contentIdLong).collect { n -> _uiState.update { it.copy(notes = n) } }
+            noteDao.getNotesByContent(_uiState.value.contentType.name, contentIdLong).collect { n -> _uiState.update { it.copy(notes = n) } }
         }
     }
 

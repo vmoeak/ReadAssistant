@@ -6,7 +6,9 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
@@ -40,10 +42,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import com.readassistant.core.domain.model.SelectionRect
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -90,6 +99,8 @@ fun NativeBookReader(
     onSingleTap: (() -> Unit)? = null,
     onLinkClicked: ((paragraphIndex: Int) -> Unit)? = null,
     highlightParagraphIndex: Int? = null,
+    onParagraphLongPress: ((paragraphIndex: Int, selectedText: String, rect: SelectionRect) -> Unit)? = null,
+    showSelectionToolbar: Boolean = false,
     isControlsVisible: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -100,17 +111,28 @@ fun NativeBookReader(
     }
     val textColor = readerColors.onBackground
     val secondaryTextColor = readerColors.onBackground.copy(alpha = 0.72f)
-    val highlightColor = Color(0xFF5B8DEF).copy(alpha = 0.25f)
+    val linkHighlightColor = Color(0xFF5B8DEF).copy(alpha = 0.25f)
+    val selectionHighlightColor = Color(0xFFFFA726).copy(alpha = 0.35f)
     val density = LocalDensity.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     var lastHandledSeekCommandId by rememberSaveable { mutableIntStateOf(0) }
+    // Character-level text selection state
+    var selectionState by remember { mutableStateOf<NativeTextSelection?>(null) }
+
+    // Clear internal selection when toolbar is dismissed externally (e.g. toolbar button actions)
+    LaunchedEffect(showSelectionToolbar) {
+        if (!showSelectionToolbar) {
+            selectionState = null
+        }
+    }
 
     BoxWithConstraints(modifier = modifier) {
         val statusBarTopPadding = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
         val navBarBottomPadding = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
         val topPadding = statusBarTopPadding + 16.dp
-        val bottomPadding = navBarBottomPadding + 4.dp
+        val bottomPadding = navBarBottomPadding + 20.dp
 
         val topContentPaddingPx = with(density) { topPadding.toPx() }
         val bottomContentPaddingPx = with(density) { bottomPadding.toPx() }
@@ -126,12 +148,34 @@ fun NativeBookReader(
         val entries = remember(paragraphs) { normalizeEntries(paragraphs) }
         val anchorMap = remember(paragraphs) { buildAnchorMap(paragraphs) }
         val linkColor = Color(0xFF5B8DEF)
-        val pages = remember(entries, contentWidthPx, contentHeightPx, fontSize, lineHeight, isBilingualMode) {
+        // Full text map: paragraphIndex → complete original text (before any splitting)
+        val fullTextMap = remember(entries) {
+            entries.filter { it.isParagraphStart && it.imageSrc.isNullOrBlank() && it.text.isNotBlank() }
+                .associate { it.paragraphIndex to it.text }
+        }
+        val fontSizePx = with(density) { fontSize.sp.toPx() }
+
+        // Only completed translations participate in pagination (not streaming ones)
+        val completedTranslationKeys = remember(translations) {
+            translations.filterValues { it.isComplete && it.translatedText.isNotBlank() && !it.translatedText.startsWith("[") }.keys
+        }
+
+        // Build bilingual entries when mode is on — interleave completed translations
+        val paginationEntries = remember(entries, isBilingualMode, completedTranslationKeys) {
+            if (isBilingualMode && completedTranslationKeys.isNotEmpty()) {
+                val completedMap = translations.filterValues { it.isComplete && it.translatedText.isNotBlank() && !it.translatedText.startsWith("[") }
+                buildBilingualEntries(entries, completedMap)
+            } else {
+                entries
+            }
+        }
+
+        val pages = remember(paginationEntries, contentWidthPx, contentHeightPx, fontSize, lineHeight) {
             paginateEntries(
-                entries = entries,
+                entries = paginationEntries,
                 contentWidthPx = contentWidthPx,
-                contentHeightPx = if (isBilingualMode) contentHeightPx * 0.92f else contentHeightPx,
-                fontSizePx = with(density) { fontSize.sp.toPx() },
+                contentHeightPx = contentHeightPx,
+                fontSizePx = fontSizePx,
                 lineHeight = lineHeight,
                 maxImageHeightPx = maxImageHeightPx,
                 paragraphGapPx = paragraphGapPx,
@@ -149,6 +193,27 @@ fun NativeBookReader(
             onParagraphPageMapChanged?.invoke(paragraphToPageMap)
         }
 
+        // Anchor state for position stability across re-pagination
+        var readingAnchor by remember { mutableStateOf<ReadingAnchor?>(null) }
+        var isRestoringAnchor by remember { mutableStateOf(false) }
+
+        // Helper to collect visible paragraphs on a given page + prefetch buffer (±1 page)
+        fun collectVisibleParagraphs(pageIndex: Int): List<Pair<Int, String>> {
+            val pagesToScan = listOfNotNull(
+                pages.getOrNull(pageIndex - 1),
+                pages.getOrNull(pageIndex),
+                pages.getOrNull(pageIndex + 1)
+            )
+            return pagesToScan
+                .flatMap { it.items }
+                .asSequence()
+                .filter { !it.isTranslation && it.isParagraphStart && it.imageSrc.isNullOrBlank() }
+                .map { it.paragraphIndex }
+                .distinct()
+                .mapNotNull { idx -> fullTextMap[idx]?.let { idx to it } }
+                .toList()
+        }
+
         LaunchedEffect(pagerState, pages) {
             snapshotFlow { pagerState.currentPage }
                 .distinctUntilChanged()
@@ -158,17 +223,43 @@ fun NativeBookReader(
                     val progress = if (total <= 1) 0f else safePage.toFloat() / (total - 1).toFloat()
                     onProgressChanged(safePage, total, progress)
 
-                    val visible = pages.getOrNull(safePage)
-                        ?.items
-                        ?.asSequence()
-                        ?.filter { it.isParagraphStart && it.imageSrc.isNullOrBlank() }
-                        ?.map { it.paragraphIndex to it.text }
-                        ?.filter { it.second.isNotBlank() }
-                        ?.distinctBy { it.first }
-                        ?.toList()
-                        .orEmpty()
+                    // Update reading anchor from current page's first non-translation entry
+                    if (!isRestoringAnchor) {
+                        val firstOriginal = pages.getOrNull(safePage)?.items
+                            ?.firstOrNull { !it.isTranslation && it.imageSrc.isNullOrBlank() && it.text.isNotBlank() }
+                        if (firstOriginal != null) {
+                            readingAnchor = ReadingAnchor(
+                                paragraphIndex = firstOriginal.paragraphIndex,
+                                textStartFraction = firstOriginal.textStartFraction
+                            )
+                        }
+                    }
+                    isRestoringAnchor = false
+
+                    val visible = collectVisibleParagraphs(safePage)
                     if (visible.isNotEmpty()) onParagraphsVisible(visible)
                 }
+        }
+
+        // Anchor restoration: when pages change due to translation insertion, restore position
+        LaunchedEffect(pages) {
+            val anchor = readingAnchor ?: return@LaunchedEffect
+            if (pages.isEmpty()) return@LaunchedEffect
+            val targetPage = findPageForAnchor(pages, anchor)
+            val currentPage = pagerState.currentPage.coerceIn(0, pages.lastIndex)
+            if (targetPage != currentPage) {
+                isRestoringAnchor = true
+                pagerState.scrollToPage(targetPage)
+            }
+        }
+
+        // When bilingual mode is toggled on, translate the current page immediately
+        LaunchedEffect(isBilingualMode) {
+            if (isBilingualMode && pages.isNotEmpty()) {
+                val safePage = pagerState.currentPage.coerceIn(0, pages.lastIndex)
+                val visible = collectVisibleParagraphs(safePage)
+                if (visible.isNotEmpty()) onParagraphsVisible(visible)
+            }
         }
 
         LaunchedEffect(seekCommandId, seekPageIndex, seekParagraphIndex, seekProgress, pages, paragraphToPageMap) {
@@ -186,7 +277,7 @@ fun NativeBookReader(
         HorizontalPager(
             state = pagerState,
             beyondBoundsPageCount = 1,
-            userScrollEnabled = pages.size > 1,
+            userScrollEnabled = pages.size > 1 && selectionState == null,
             modifier = Modifier
                 .fillMaxSize()
                 .background(readerColors.background)
@@ -203,8 +294,13 @@ fun NativeBookReader(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(pageIndex, pages.size, onSingleTap, isControlsVisible) {
+                        .pointerInput(pageIndex, pages.size, onSingleTap, isControlsVisible, selectionState) {
                             detectTapGestures { offset ->
+                                if (selectionState != null) {
+                                    selectionState = null
+                                    onSingleTap?.invoke()
+                                    return@detectTapGestures
+                                }
                                 if (isControlsVisible) {
                                     onSingleTap?.invoke()
                                     return@detectTapGestures
@@ -235,13 +331,29 @@ fun NativeBookReader(
 
                 // Content ON TOP — ClickableText for links intercepts taps; plain Text passes through
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .fillMaxHeight()
+                    modifier = Modifier.fillMaxWidth().fillMaxHeight()
                 ) {
                     page.items.forEachIndexed { idx, item ->
+                        // Translation entries: render with smaller font, no gestures
+                        if (item.isTranslation) {
+                            val isFirstTranslationFragment = item.textStartFraction <= 0.001f
+                            Text(
+                                text = item.text,
+                                style = TextStyle(
+                                    fontSize = (fontSize - 1f).coerceAtLeast(12f).sp,
+                                    lineHeight = (((fontSize - 1f).coerceAtLeast(12f)) * lineHeight).sp,
+                                    color = secondaryTextColor
+                                ),
+                                modifier = if (isFirstTranslationFragment) Modifier.padding(top = 4.dp) else Modifier
+                            )
+                            if (idx != page.items.lastIndex) {
+                                Spacer(modifier = Modifier.size(4.dp))
+                            }
+                            return@forEachIndexed
+                        }
+
                         val isHighlighted = highlightParagraphIndex != null && item.paragraphIndex == highlightParagraphIndex && item.isParagraphStart
-                        val highlightBg = if (isHighlighted) Modifier.background(highlightColor, RoundedCornerShape(4.dp)) else Modifier
+                        val highlightBg = if (isHighlighted) Modifier.background(linkHighlightColor, RoundedCornerShape(4.dp)) else Modifier
 
                         if (!item.imageSrc.isNullOrBlank()) {
                             val imageAspect = remember(item.imageSrc) { resolveImageAspectRatio(item.imageSrc) }
@@ -333,6 +445,8 @@ fun NativeBookReader(
                                 )
                             }
                         } else {
+                            val thisItemKey = pageIndex * 1000 + idx
+                            val isThisSelected = selectionState?.itemKey == thisItemKey
                             val textStyle = if (item.isHeading) {
                                 TextStyle(
                                     fontSize = (fontSize + 6f).sp,
@@ -346,8 +460,12 @@ fun NativeBookReader(
                                     color = textColor
                                 )
                             }
+
+                            // Build annotated string for link text, or use plain text
+                            val displayText: CharSequence
+                            val annotated: AnnotatedString?
                             if (item.links.isNotEmpty()) {
-                                val annotated = buildAnnotatedString {
+                                val built = buildAnnotatedString {
                                     var cursor = 0
                                     for (link in item.links.sortedBy { it.start }) {
                                         val s = link.start.coerceIn(0, item.text.length)
@@ -362,49 +480,156 @@ fun NativeBookReader(
                                     }
                                     if (cursor < item.text.length) append(item.text.substring(cursor))
                                 }
-                                // Use Text + pointerInput to handle BOTH link clicks and page turns
-                                var textLayout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+                                annotated = built
+                                displayText = built
+                            } else {
+                                annotated = null
+                                displayText = item.text
+                            }
+
+                            var textLayout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+                            var itemCoordinates by remember { mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
+
+                            // Compute selection highlight via drawBehind
+                            val selStart = if (isThisSelected) minOf(selectionState!!.startOffset, selectionState!!.endOffset).coerceIn(0, item.text.length) else 0
+                            val selEnd = if (isThisSelected) maxOf(selectionState!!.startOffset, selectionState!!.endOffset).coerceIn(0, item.text.length) else 0
+
+                            val selectionDrawModifier = Modifier.drawBehind {
+                                if (isThisSelected && selStart < selEnd) {
+                                    val layout = textLayout ?: return@drawBehind
+                                    val path = layout.getPathForRange(selStart, selEnd)
+                                    drawPath(path, color = selectionHighlightColor)
+                                }
+                            }
+
+                            // Store layout coordinates for toolbar positioning
+                            val positionModifier = Modifier.onGloballyPositioned { coordinates ->
+                                itemCoordinates = coordinates
+                            }
+
+                            // Helper to compute rect and show toolbar
+                            fun showSelectionToolbar() {
+                                val state = selectionState ?: return
+                                val layout = textLayout ?: return
+                                val coords = itemCoordinates ?: return
+                                val s = minOf(state.startOffset, state.endOffset).coerceIn(0, item.text.length)
+                                val e = maxOf(state.startOffset, state.endOffset).coerceIn(0, item.text.length)
+                                if (s >= e) return
+                                val pos = coords.positionInRoot()
+                                val startLine = layout.getLineForOffset(s)
+                                val endLine = layout.getLineForOffset((e - 1).coerceAtLeast(s))
+                                val lineTop = layout.getLineTop(startLine)
+                                val lineBottom = layout.getLineBottom(endLine)
+                                val left = layout.getHorizontalPosition(s, true)
+                                val right = layout.getHorizontalPosition(e, true)
+                                val selectedText = item.text.substring(s, e)
+                                val rect = SelectionRect(
+                                    left = (pos.x + if (startLine == endLine) left else 0f) / density.density,
+                                    top = (pos.y + lineTop) / density.density,
+                                    right = (pos.x + if (startLine == endLine) right else coords.size.width.toFloat()) / density.density,
+                                    bottom = (pos.y + lineBottom) / density.density
+                                )
+                                onParagraphLongPress?.invoke(item.paragraphIndex, selectedText, rect)
+                            }
+
+                            // Drag-to-select gesture
+                            val dragSelectModifier = Modifier.pointerInput(thisItemKey, onParagraphLongPress) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { offset ->
+                                        val layout = textLayout ?: return@detectDragGesturesAfterLongPress
+                                        val charOffset = layout.getOffsetForPosition(offset)
+                                        val (wStart, wEnd) = findWordBoundary(item.text, charOffset)
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectionState = NativeTextSelection(
+                                            itemKey = thisItemKey,
+                                            paragraphIndex = item.paragraphIndex,
+                                            startOffset = wStart,
+                                            endOffset = wEnd,
+                                            anchorWordStart = wStart,
+                                            anchorWordEnd = wEnd,
+                                            isDragging = true
+                                        )
+                                    },
+                                    onDrag = { change, _ ->
+                                        val layout = textLayout ?: return@detectDragGesturesAfterLongPress
+                                        val charOffset = layout.getOffsetForPosition(change.position)
+                                        val current = selectionState ?: return@detectDragGesturesAfterLongPress
+                                        selectionState = if (charOffset < current.anchorWordStart) {
+                                            current.copy(startOffset = charOffset, endOffset = current.anchorWordEnd)
+                                        } else if (charOffset > current.anchorWordEnd) {
+                                            current.copy(startOffset = current.anchorWordStart, endOffset = charOffset)
+                                        } else {
+                                            current.copy(startOffset = current.anchorWordStart, endOffset = current.anchorWordEnd)
+                                        }
+                                        change.consume()
+                                    },
+                                    onDragEnd = {
+                                        selectionState = selectionState?.copy(isDragging = false)
+                                        showSelectionToolbar()
+                                    },
+                                    onDragCancel = {
+                                        // Also finalize selection (fires when user lifts without much drag)
+                                        selectionState = selectionState?.copy(isDragging = false)
+                                        showSelectionToolbar()
+                                    }
+                                )
+                            }
+
+                            // Tap gesture for links and page turns
+                            val tapModifier = Modifier.pointerInput(annotated, anchorMap, pageIndex, pages.size, onSingleTap, isControlsVisible, selectionState) {
+                                detectTapGestures { tapOffset ->
+                                    // Clear active selection on any tap
+                                    if (selectionState != null) {
+                                        selectionState = null
+                                        onSingleTap?.invoke()
+                                        return@detectTapGestures
+                                    }
+                                    if (annotated != null) {
+                                        val layout = textLayout ?: return@detectTapGestures
+                                        val charOffset = layout.getOffsetForPosition(tapOffset)
+                                        val ann = annotated.getStringAnnotations("link", charOffset, charOffset).firstOrNull()
+                                            ?: annotated.getStringAnnotations("link", (charOffset - 1).coerceAtLeast(0), (charOffset + 1).coerceAtMost(annotated.length)).firstOrNull()
+                                        if (ann != null) {
+                                            val targetId = ann.item.removePrefix("#")
+                                            val targetParagraphIndex = anchorMap[targetId]
+                                            if (targetParagraphIndex != null) {
+                                                onLinkClicked?.invoke(targetParagraphIndex)
+                                            }
+                                            return@detectTapGestures
+                                        }
+                                    }
+                                    // No link — handle page turn
+                                    if (isControlsVisible) {
+                                        onSingleTap?.invoke()
+                                        return@detectTapGestures
+                                    }
+                                    val width = size.width.toFloat().coerceAtLeast(1f)
+                                    when {
+                                        tapOffset.x < width * 0.20f -> {
+                                            if (pageIndex > 0) scope.launch { pagerState.animateScrollToPage(pageIndex - 1) }
+                                        }
+                                        tapOffset.x > width * 0.80f -> {
+                                            if (pageIndex < pages.lastIndex) scope.launch { pagerState.animateScrollToPage(pageIndex + 1) }
+                                        }
+                                        else -> onSingleTap?.invoke()
+                                    }
+                                }
+                            }
+
+                            val commonModifier = highlightBg
+                                    .then(selectionDrawModifier)
+                                    .then(positionModifier)
+                                    .then(dragSelectModifier)
+                                    .then(tapModifier)
+
+                            if (annotated != null) {
                                 Text(
                                     text = annotated,
                                     style = textStyle,
                                     maxLines = Int.MAX_VALUE,
                                     overflow = TextOverflow.Clip,
                                     onTextLayout = { textLayout = it },
-                                    modifier = highlightBg.then(Modifier.pointerInput(annotated, anchorMap, pageIndex, pages.size, onSingleTap, isControlsVisible) {
-                                        detectTapGestures { tapOffset ->
-                                            val layout = textLayout ?: return@detectTapGestures
-                                            val charOffset = layout.getOffsetForPosition(tapOffset)
-                                            // Expand search radius for small targets like * or †
-                                            val ann = annotated.getStringAnnotations("link", charOffset, charOffset).firstOrNull()
-                                                ?: annotated.getStringAnnotations("link", (charOffset - 1).coerceAtLeast(0), (charOffset + 1).coerceAtMost(annotated.length)).firstOrNull()
-                                            if (ann != null) {
-                                                val targetId = ann.item.removePrefix("#")
-                                                val targetParagraphIndex = anchorMap[targetId]
-                                                android.util.Log.d("NativeBookReader", "Link clicked: href=${ann.item}, targetId=$targetId, paragraphIndex=$targetParagraphIndex, pageMapHit=${paragraphToPageMap[targetParagraphIndex]}")
-                                                if (targetParagraphIndex != null) {
-                                                    onLinkClicked?.invoke(targetParagraphIndex)
-                                                } else {
-                                                    android.util.Log.w("NativeBookReader", "Anchor not found: $targetId. Available anchors(first 20): ${anchorMap.keys.take(20)}")
-                                                }
-                                            } else {
-                                                // No link at tap position — handle page turn
-                                                if (isControlsVisible) {
-                                                    onSingleTap?.invoke()
-                                                    return@detectTapGestures
-                                                }
-                                                val width = size.width.toFloat().coerceAtLeast(1f)
-                                                when {
-                                                    tapOffset.x < width * 0.20f -> {
-                                                        if (pageIndex > 0) scope.launch { pagerState.animateScrollToPage(pageIndex - 1) }
-                                                    }
-                                                    tapOffset.x > width * 0.80f -> {
-                                                        if (pageIndex < pages.lastIndex) scope.launch { pagerState.animateScrollToPage(pageIndex + 1) }
-                                                    }
-                                                    else -> onSingleTap?.invoke()
-                                                }
-                                            }
-                                        }
-                                    })
+                                    modifier = commonModifier
                                 )
                             } else {
                                 Text(
@@ -412,22 +637,9 @@ fun NativeBookReader(
                                     style = textStyle,
                                     maxLines = Int.MAX_VALUE,
                                     overflow = TextOverflow.Clip,
-                                    modifier = highlightBg
+                                    onTextLayout = { textLayout = it },
+                                    modifier = commonModifier
                                 )
-                            }
-                            if (isBilingualMode && item.isParagraphStart) {
-                                val translated = translations[item.paragraphIndex]?.translatedText.orEmpty()
-                                if (translated.isNotBlank() && !isSameReadingText(translated, item.text)) {
-                                    Text(
-                                        text = translated,
-                                        style = TextStyle(
-                                            fontSize = (fontSize - 1f).coerceAtLeast(12f).sp,
-                                            lineHeight = (((fontSize - 1f).coerceAtLeast(12f)) * lineHeight).sp,
-                                            color = secondaryTextColor
-                                        ),
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    )
-                                }
                             }
                         }
 
@@ -449,7 +661,16 @@ private data class NormalizedEntry(
     val isHeading: Boolean,
     val isParagraphStart: Boolean,
     val imageSrc: String? = null,
-    val links: List<LinkSpan> = emptyList()
+    val links: List<LinkSpan> = emptyList(),
+    val textStartFraction: Float = 0f,
+    val textEndFraction: Float = 1f,
+    val isTranslation: Boolean = false
+)
+
+/** Semantic reading position: paragraph + fraction within that paragraph */
+private data class ReadingAnchor(
+    val paragraphIndex: Int,
+    val textStartFraction: Float
 )
 
 private data class ReaderPage(
@@ -670,7 +891,8 @@ private fun paginateEntries(
                     widthPx = contentWidthPx,
                     availableHeightPx = remainingHeight - (paragraphGapPx * 0.5f),
                     fontSizePx = fontSizePx,
-                    lineHeight = lineHeight
+                    lineHeight = lineHeight,
+                    density = density
                 )
 
                 if (split != null) {
@@ -686,7 +908,7 @@ private fun paginateEntries(
                         // Continue loop with the same pending entry on a fresh page
                         continue
                     } else {
-                        // On a fresh page and still doesn't fit? 
+                        // On a fresh page and still doesn't fit?
                         // Force it in or split it even if it's the first line
                         current += pending
                         currentHeight += pendingHeight
@@ -701,18 +923,43 @@ private fun paginateEntries(
     return pages.map { ReaderPage(items = it) }
 }
 
+/** Compute text size in px for a given entry, matching what Compose renders */
+private fun translationAwareTextSize(entry: NormalizedEntry, fontSizePx: Float, density: Float): Float {
+    return when {
+        entry.isTranslation -> {
+            // Must match Compose: (fontSize - 1f).coerceAtLeast(12f).sp
+            // fontSizePx = fontSize.sp.toPx() = fontSize * density
+            // translationSp = (fontSize - 1f).coerceAtLeast(12f)
+            // translationPx = translationSp * density
+            val fontSizeSp = fontSizePx / density
+            ((fontSizeSp - 1f).coerceAtLeast(12f)) * density
+        }
+        entry.isHeading -> fontSizePx * 1.35f
+        else -> fontSizePx
+    }
+}
+
 private fun splitEntryByHeight(
     entry: NormalizedEntry,
     widthPx: Float,
     availableHeightPx: Float,
     fontSizePx: Float,
-    lineHeight: Float
+    lineHeight: Float,
+    density: Float = 1f
 ): Pair<NormalizedEntry, NormalizedEntry>? {
     if (!entry.imageSrc.isNullOrBlank()) return null
     if (entry.text.length < 2) return null
 
-    val textSizePx = if (entry.isHeading) fontSizePx * 1.35f else fontSizePx
-    val targetLineHeightPx = if (entry.isHeading) textSizePx * 1.24f else fontSizePx * lineHeight
+    // Account for top padding of translation entries
+    val effectiveAvailable = if (entry.isTranslation) availableHeightPx - 4f * density else availableHeightPx
+    if (effectiveAvailable <= 0f) return null
+
+    val textSizePx = translationAwareTextSize(entry, fontSizePx, density)
+    val targetLineHeightPx = when {
+        entry.isTranslation -> textSizePx * lineHeight
+        entry.isHeading -> textSizePx * 1.24f
+        else -> fontSizePx * lineHeight
+    }
     val layout = buildStaticLayout(
         text = entry.text,
         textSizePx = textSizePx,
@@ -723,7 +970,7 @@ private fun splitEntryByHeight(
 
     var lastLine = -1
     for (line in 0 until layout.lineCount) {
-        if (layout.getLineBottom(line).toFloat() <= availableHeightPx) {
+        if (layout.getLineBottom(line).toFloat() <= effectiveAvailable) {
             lastLine = line
         } else {
             break
@@ -749,8 +996,14 @@ private fun splitEntryByHeight(
         if (s >= e || s >= tailText.length) return@mapNotNull null
         LinkSpan(s, e.coerceAtMost(tailText.length), link.href)
     }
-    val head = entry.copy(text = headText, links = headLinks)
-    val tail = entry.copy(text = tailText, isParagraphStart = false, links = tailLinks)
+    // Compute text offset fractions for viewport-based translation slicing
+    val fragmentLength = entry.text.length.coerceAtLeast(1)
+    val splitRatio = splitEnd.toFloat() / fragmentLength.toFloat()
+    val fragmentRange = entry.textEndFraction - entry.textStartFraction
+    val splitFraction = entry.textStartFraction + splitRatio * fragmentRange
+
+    val head = entry.copy(text = headText, links = headLinks, textEndFraction = splitFraction)
+    val tail = entry.copy(text = tailText, isParagraphStart = false, links = tailLinks, textStartFraction = splitFraction)
     return head to tail
 }
 
@@ -776,15 +1029,21 @@ private fun measureEntryHeight(
         return imageHeightPx + captionHeight
     }
 
-    val textSizePx = if (entry.isHeading) fontSizePx * 1.35f else fontSizePx
-    val targetLineHeightPx = if (entry.isHeading) textSizePx * 1.24f else fontSizePx * lineHeight
+    val textSizePx = translationAwareTextSize(entry, fontSizePx, density)
+    val targetLineHeightPx = when {
+        entry.isTranslation -> textSizePx * lineHeight
+        entry.isHeading -> textSizePx * 1.24f
+        else -> fontSizePx * lineHeight
+    }
     val layout = buildStaticLayout(
         text = entry.text,
         textSizePx = textSizePx,
         targetLineHeightPx = targetLineHeightPx,
         widthPx = widthPx.roundToInt().coerceAtLeast(120)
     )
-    return layout.height.toFloat()
+    // Add top padding only for the first fragment of translation entries (4.dp equivalent)
+    val extraPadding = if (entry.isTranslation && entry.textStartFraction <= 0.001f) 4f * density else 0f
+    return layout.height.toFloat() + extraPadding
 }
 
 private fun buildStaticLayout(
@@ -828,10 +1087,75 @@ private fun buildParagraphToPageMap(pages: List<ReaderPage>): Map<Int, Int> {
     val map = mutableMapOf<Int, Int>()
     pages.forEachIndexed { pageIndex, page ->
         page.items.forEach { item ->
-            map.putIfAbsent(item.paragraphIndex, pageIndex)
+            if (!item.isTranslation) {
+                map.putIfAbsent(item.paragraphIndex, pageIndex)
+            }
         }
     }
     return map
+}
+
+/**
+ * Build bilingual entries by interleaving completed translation entries after each original
+ * paragraph's last fragment. Only completed translations are included to avoid re-pagination
+ * during streaming.
+ */
+private fun buildBilingualEntries(
+    entries: List<NormalizedEntry>,
+    translations: Map<Int, TranslationPair>
+): List<NormalizedEntry> {
+    if (translations.isEmpty()) return entries
+    val result = mutableListOf<NormalizedEntry>()
+    for (entry in entries) {
+        result += entry
+        // Insert translation after the last fragment of a paragraph
+        // A fragment is the "last" if the next entry has a different paragraphIndex or is a new paragraph start, or this is the last entry
+        val isLastFragment = entry.imageSrc.isNullOrBlank() && entry.text.isNotBlank() && !entry.isTranslation
+        if (isLastFragment) {
+            val nextIdx = entries.indexOf(entry) + 1
+            val isActuallyLast = nextIdx >= entries.size ||
+                entries[nextIdx].paragraphIndex != entry.paragraphIndex ||
+                entries[nextIdx].isParagraphStart
+            if (isActuallyLast) {
+                val pair = translations[entry.paragraphIndex]
+                if (pair != null && pair.isComplete && pair.translatedText.isNotBlank() &&
+                    !pair.translatedText.startsWith("[")) {
+                    result += NormalizedEntry(
+                        paragraphIndex = entry.paragraphIndex,
+                        text = pair.translatedText,
+                        isHeading = false,
+                        isParagraphStart = false,
+                        isTranslation = true
+                    )
+                }
+            }
+        }
+    }
+    return result
+}
+
+/**
+ * Find the page index containing the given anchor position after re-pagination.
+ * Returns the page where the paragraph with matching paragraphIndex and textStartFraction is found.
+ */
+private fun findPageForAnchor(pages: List<ReaderPage>, anchor: ReadingAnchor): Int {
+    for ((pageIdx, page) in pages.withIndex()) {
+        for (item in page.items) {
+            if (item.isTranslation) continue
+            if (item.paragraphIndex == anchor.paragraphIndex &&
+                item.textStartFraction <= anchor.textStartFraction + 0.01f &&
+                item.textEndFraction >= anchor.textStartFraction - 0.01f) {
+                return pageIdx
+            }
+        }
+    }
+    // Fallback: find nearest paragraph
+    for ((pageIdx, page) in pages.withIndex()) {
+        if (page.items.any { !it.isTranslation && it.paragraphIndex == anchor.paragraphIndex }) {
+            return pageIdx
+        }
+    }
+    return 0
 }
 
 private fun resolveImageModel(imageSrc: String?): Any? {
@@ -934,14 +1258,30 @@ private fun calculateInSampleSize(
     return inSampleSize.coerceAtLeast(1)
 }
 
-private fun isSameReadingText(a: String, b: String): Boolean {
-    fun normalize(text: String): String {
-        return text
-            .lowercase()
-            .replace(Regex("[\\s\\p{Punct}，。！？；：“”‘’、（）《》【】]+"), "")
-            .trim()
+private data class NativeTextSelection(
+    val itemKey: Int,
+    val paragraphIndex: Int,
+    val startOffset: Int,
+    val endOffset: Int,
+    val anchorWordStart: Int,
+    val anchorWordEnd: Int,
+    val isDragging: Boolean = false
+)
+
+private fun findWordBoundary(text: String, offset: Int): Pair<Int, Int> {
+    if (text.isEmpty()) return 0 to 0
+    val safeOffset = offset.coerceIn(0, text.length - 1)
+    // For CJK characters, select single character
+    val ch = text[safeOffset]
+    if (ch.code in 0x4E00..0x9FFF || ch.code in 0x3400..0x4DBF || ch.code in 0x3000..0x303F) {
+        return safeOffset to (safeOffset + 1)
     }
-    val na = normalize(a)
-    val nb = normalize(b)
-    return na.isNotBlank() && na == nb
+    // For other text, find word boundaries
+    var start = safeOffset
+    while (start > 0 && !text[start - 1].isWhitespace() && text[start - 1] !in ".,;:!?()[]{}\"'") start--
+    var end = safeOffset
+    while (end < text.length && !text[end].isWhitespace() && text[end] !in ".,;:!?()[]{}\"'") end++
+    if (start == end && end < text.length) end++
+    return start to end
 }
+

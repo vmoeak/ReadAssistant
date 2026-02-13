@@ -21,6 +21,7 @@ class TranslationRepositoryImpl @Inject constructor(private val translationServi
         val config = llmService.getDefaultConfig()
         if (config == null) {
             android.util.Log.w("ReadAssistant", "Translation failed: No default LLM provider configured")
+            emit(TranslationPair(idx, text, "[No LLM provider configured]", true))
             return@flow
         }
         var acc = ""

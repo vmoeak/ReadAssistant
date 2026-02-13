@@ -168,6 +168,16 @@ fun ReaderScreen(
                         highlightParagraphIndex = targetParagraphIndex
                     },
                     highlightParagraphIndex = highlightParagraphIndex,
+                    onParagraphLongPress = { paragraphIndex, selectedText, rect ->
+                        viewModel.onTextSelected(
+                            com.readassistant.core.domain.model.TextSelection(
+                                selectedText = selectedText,
+                                paragraphIndex = paragraphIndex,
+                                rect = rect
+                            )
+                        )
+                    },
+                    showSelectionToolbar = uiState.showSelectionToolbar,
                     isControlsVisible = showTopBar,
                     modifier = Modifier
                         .fillMaxSize()
@@ -232,7 +242,7 @@ fun ReaderScreen(
                     onToggleTranslation = { translationViewModel.toggleBilingualMode() },
                     onSettingsClick = { viewModel.toggleSettingsPanel() },
                     onNotesClick = {
-                        if (isBook) showChaptersList = true else showNotesList = true
+                        showNotesList = true
                     },
                     progressText = null,
                     backgroundColor = rc.background
@@ -332,26 +342,30 @@ fun ReaderScreen(
                     val density = LocalDensity.current
                     Modifier.layout { measurable, constraints ->
                         val placeable = measurable.measure(constraints)
-                        val topPadding = 16.dp.roundToPx()
+                        val gap = 48.dp.roundToPx()
                         val leftPx = rect.left * density.density
                         val rightPx = rect.right * density.density
                         val topPx = rect.top * density.density
                         val bottomPx = rect.bottom * density.density
                         
                         val centerX = ((leftPx + rightPx) / 2).toInt()
-                        val topY = topPx.toInt()
-                        val bottomY = bottomPx.toInt()
                         
                         var x = centerX - placeable.width / 2
-                        var y = topY - placeable.height - topPadding
+                        // Try placing above the selection
+                        var y = topPx.toInt() - placeable.height - gap
                         
                         // Clamp horizontally
-                        x = x.coerceIn(0, constraints.maxWidth - placeable.width)
+                        x = x.coerceIn(0, (constraints.maxWidth - placeable.width).coerceAtLeast(0))
                         
-                        // Flip vertically if too close to top
-                        if (y < 0) {
-                            y = bottomY + topPadding
+                        // If truly no room above (not even half toolbar fits), place below
+                        if (y < 0 && topPx.toInt() < placeable.height / 2) {
+                            y = bottomPx.toInt() + gap
                         }
+                        // Otherwise keep above, clamped to screen top
+                        y = y.coerceAtLeast(0)
+                        
+                        // If still goes off-screen bottom, clamp
+                        y = y.coerceIn(0, (constraints.maxHeight - placeable.height).coerceAtLeast(0))
                         
                         layout(placeable.width, placeable.height) {
                             placeable.place(x, y)

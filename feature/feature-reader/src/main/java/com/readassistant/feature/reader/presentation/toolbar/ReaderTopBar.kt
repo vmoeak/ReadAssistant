@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.*
@@ -81,7 +81,7 @@ fun ReaderTopBar(
             )
             CompactIcon(
                 onClick = onNotesClick,
-                content = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Notes", modifier = Modifier.size(20.dp)) }
+                content = { Icon(Icons.Default.Edit, contentDescription = "Notes", modifier = Modifier.size(20.dp)) }
             )
             CompactIcon(
                 onClick = onSettingsClick,

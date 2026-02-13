@@ -21,8 +21,9 @@ class TranslationViewModel @Inject constructor(private val repo: TranslationRepo
 
     fun toggleBilingualMode() {
         _isBilingual.value = !_isBilingual.value
+        android.util.Log.w("ReadAssistant", "toggleBilingualMode -> ${_isBilingual.value}")
     }
-    fun translateParagraphs(paragraphs: List<Pair<Int, String>>) { if (!_isBilingual.value) return; viewModelScope.launch { val s = sourceLang.first(); val t = targetLang.first()
+    fun translateParagraphs(paragraphs: List<Pair<Int, String>>) { viewModelScope.launch { val s = sourceLang.first(); val t = targetLang.first()
         android.util.Log.w(
             "ReadAssistant",
             "translateParagraphs bilingual=${_isBilingual.value} size=${paragraphs.size} sampleIdx=${paragraphs.firstOrNull()?.first ?: -1}"
@@ -33,6 +34,9 @@ class TranslationViewModel @Inject constructor(private val repo: TranslationRepo
                 sem.acquire()
                 try {
                     repo.getTranslation(i, txt, s, t).collect { p -> _translations.update { it + (i to p) } }
+                } catch (e: Exception) {
+                    android.util.Log.e("ReadAssistant", "Translation error for idx=$i", e)
+                    _translations.update { it + (i to TranslationPair(i, txt, "[Error: ${e.message}]", true)) }
                 } finally {
                     jobs.remove(i)
                     sem.release()

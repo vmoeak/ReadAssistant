@@ -153,6 +153,12 @@ fun ReaderScreen(
                             showTopBar = !showTopBar
                         }
                     },
+                    onLinkClicked = { targetParagraphIndex ->
+                        seekPageIndex = null
+                        seekProgress = null
+                        seekParagraphIndex = targetParagraphIndex
+                        seekCommandId += 1
+                    },
                     isControlsVisible = showTopBar,
                     modifier = Modifier
                         .fillMaxSize()

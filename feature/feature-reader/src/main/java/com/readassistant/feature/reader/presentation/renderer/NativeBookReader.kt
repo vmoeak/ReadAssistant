@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,8 +41,14 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImagePainter
@@ -79,6 +86,7 @@ fun NativeBookReader(
     onParagraphPageMapChanged: ((Map<Int, Int>) -> Unit)? = null,
     onParagraphsVisible: (List<Pair<Int, String>>) -> Unit,
     onSingleTap: (() -> Unit)? = null,
+    onLinkClicked: ((paragraphIndex: Int) -> Unit)? = null,
     isControlsVisible: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -112,6 +120,8 @@ fun NativeBookReader(
         val maxImageHeightDp = with(density) { maxImageHeightPx.toDp() }
 
         val entries = remember(paragraphs) { normalizeEntries(paragraphs) }
+        val anchorMap = remember(paragraphs) { buildAnchorMap(paragraphs) }
+        val linkColor = Color(0xFF5B8DEF)
         val pages = remember(entries, contentWidthPx, contentHeightPx, fontSize, lineHeight, isBilingualMode) {
             paginateEntries(
                 entries = entries,
@@ -294,12 +304,45 @@ fun NativeBookReader(
                                     color = textColor
                                 )
                             }
-                            Text(
-                                text = item.text,
-                                style = textStyle,
-                                maxLines = Int.MAX_VALUE,
-                                overflow = TextOverflow.Clip
-                            )
+                            if (item.links.isNotEmpty()) {
+                                val annotated = buildAnnotatedString {
+                                    var cursor = 0
+                                    for (link in item.links.sortedBy { it.start }) {
+                                        val s = link.start.coerceIn(0, item.text.length)
+                                        val e = link.end.coerceIn(s, item.text.length)
+                                        if (s > cursor) append(item.text.substring(cursor, s))
+                                        pushStringAnnotation(tag = "link", annotation = link.href)
+                                        withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                                            append(item.text.substring(s, e))
+                                        }
+                                        pop()
+                                        cursor = e
+                                    }
+                                    if (cursor < item.text.length) append(item.text.substring(cursor))
+                                }
+                                ClickableText(
+                                    text = annotated,
+                                    style = textStyle,
+                                    maxLines = Int.MAX_VALUE,
+                                    overflow = TextOverflow.Clip,
+                                    onClick = { offset ->
+                                        annotated.getStringAnnotations("link", offset, offset).firstOrNull()?.let { ann ->
+                                            val targetId = ann.item.removePrefix("#")
+                                            val targetParagraphIndex = anchorMap[targetId]
+                                            if (targetParagraphIndex != null) {
+                                                onLinkClicked?.invoke(targetParagraphIndex)
+                                            }
+                                        }
+                                    }
+                                )
+                            } else {
+                                Text(
+                                    text = item.text,
+                                    style = textStyle,
+                                    maxLines = Int.MAX_VALUE,
+                                    overflow = TextOverflow.Clip
+                                )
+                            }
                             if (isBilingualMode && item.isParagraphStart) {
                                 val translated = translations[item.paragraphIndex]?.translatedText.orEmpty()
                                 if (translated.isNotBlank() && !isSameReadingText(translated, item.text)) {
@@ -359,12 +402,15 @@ fun NativeBookReader(
     }
 }
 
+private data class LinkSpan(val start: Int, val end: Int, val href: String)
+
 private data class NormalizedEntry(
     val paragraphIndex: Int,
     val text: String,
     val isHeading: Boolean,
     val isParagraphStart: Boolean,
-    val imageSrc: String? = null
+    val imageSrc: String? = null,
+    val links: List<LinkSpan> = emptyList()
 )
 
 private data class ReaderPage(
@@ -394,20 +440,20 @@ private fun normalizeEntries(paragraphs: List<ReaderParagraph>): List<Normalized
             )
         }
 
-        val text = when {
-            paragraph.html.isNotBlank() -> Jsoup.parse(paragraph.html).text().replace(Regex("\\s+"), " ").trim()
-            else -> paragraph.text.replace(Regex("\\s+"), " ").trim()
-        }
+        val parsed = extractTextAndLinks(paragraph.html, paragraph.text)
+        val text = parsed.first
+        val links = parsed.second
 
         if (text.isBlank()) return@mapNotNull null
         if (!paragraph.isHeading && isGenericImageLabel(text)) return@mapNotNull null
-        
+
         return@mapNotNull NormalizedEntry(
             paragraphIndex = paragraph.index,
             text = text,
             isHeading = paragraph.isHeading,
             isParagraphStart = true,
-            imageSrc = null
+            imageSrc = null,
+            links = links
         )
     }
 }
@@ -419,6 +465,47 @@ private fun isGenericImageLabel(text: String): Boolean {
         normalized == "img" ||
         normalized == "figure" ||
         normalized.matches(Regex("""figure\s*\d+[\.:]?"""))
+}
+
+private fun extractTextAndLinks(html: String, fallbackText: String): Pair<String, List<LinkSpan>> {
+    if (html.isBlank()) {
+        return fallbackText.replace(Regex("\\s+"), " ").trim() to emptyList()
+    }
+    val doc = Jsoup.parse(html)
+    val plainText = doc.text().replace(Regex("\\s+"), " ").trim()
+    val anchors = doc.select("a[href]")
+    if (anchors.isEmpty()) return plainText to emptyList()
+
+    val links = mutableListOf<LinkSpan>()
+    for (anchor in anchors) {
+        val href = anchor.attr("href").trim()
+        if (href.isBlank() || !href.startsWith("#")) continue
+        val linkText = anchor.text().replace(Regex("\\s+"), " ").trim()
+        if (linkText.isBlank()) continue
+        val idx = plainText.indexOf(linkText)
+        if (idx < 0) continue
+        // Avoid duplicate spans at the same position
+        if (links.any { it.start == idx && it.end == idx + linkText.length }) continue
+        links += LinkSpan(start = idx, end = idx + linkText.length, href = href)
+    }
+    return plainText to links
+}
+
+private fun buildAnchorMap(paragraphs: List<ReaderParagraph>): Map<String, Int> {
+    val map = mutableMapOf<String, Int>()
+    for (p in paragraphs) {
+        if (p.html.isBlank()) continue
+        val doc = Jsoup.parse(p.html)
+        doc.select("[id]").forEach { el ->
+            val id = el.id().trim()
+            if (id.isNotBlank()) map.putIfAbsent(id, p.index)
+        }
+        doc.select("a[name]").forEach { el ->
+            val name = el.attr("name").trim()
+            if (name.isNotBlank()) map.putIfAbsent(name, p.index)
+        }
+    }
+    return map
 }
 
 private fun paginateEntries(
@@ -547,8 +634,21 @@ private fun splitEntryByHeight(
     val tailText = entry.text.substring(splitEnd).trim()
     if (headText.isBlank() || tailText.isBlank()) return null
 
-    val head = entry.copy(text = headText)
-    val tail = entry.copy(text = tailText, isParagraphStart = false)
+    val headLinks = entry.links.mapNotNull { link ->
+        if (link.start >= splitEnd) return@mapNotNull null
+        LinkSpan(link.start, link.end.coerceAtMost(splitEnd), link.href)
+    }.filter { it.start < it.end }
+    // Compute offset for tail: characters before splitEnd may have been trimmed
+    val tailOffset = splitEnd
+    val tailLinks = entry.links.mapNotNull { link ->
+        if (link.end <= tailOffset) return@mapNotNull null
+        val s = (link.start - tailOffset).coerceAtLeast(0)
+        val e = link.end - tailOffset
+        if (s >= e || s >= tailText.length) return@mapNotNull null
+        LinkSpan(s, e.coerceAtMost(tailText.length), link.href)
+    }
+    val head = entry.copy(text = headText, links = headLinks)
+    val tail = entry.copy(text = tailText, isParagraphStart = false, links = tailLinks)
     return head to tail
 }
 

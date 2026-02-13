@@ -213,7 +213,14 @@ fun NativeBookReader(
         // Anchor state for position stability across re-pagination
         var readingAnchor by remember { mutableStateOf<ReadingAnchor?>(null) }
         var isRestoringAnchor by remember { mutableStateOf(false) }
-        var lastUserNavTime by remember { mutableStateOf(0L) }
+        // When true, anchor restoration is active (set on translation toggle, cleared on user navigation)
+        var forceAnchorRestore by remember { mutableStateOf(false) }
+        var previousBilingualMode by remember { mutableStateOf(isBilingualMode) }
+
+        if (previousBilingualMode != isBilingualMode) {
+            forceAnchorRestore = true
+            previousBilingualMode = isBilingualMode
+        }
 
         // Helper to collect visible paragraphs on a given page + prefetch buffer (±1 page)
         fun collectVisibleParagraphs(pageIndex: Int): List<Pair<Int, String>> {
@@ -242,8 +249,7 @@ fun NativeBookReader(
                     onProgressChanged(safePage, total, progress)
 
                     // Update reading anchor from current page's first non-translation entry
-                    if (!isRestoringAnchor) {
-                        lastUserNavTime = System.currentTimeMillis()
+                    if (!isRestoringAnchor && !forceAnchorRestore) {
                         val firstOriginal = pages.getOrNull(safePage)?.items
                             ?.firstOrNull { !it.isTranslation && it.imageSrc.isNullOrBlank() && it.text.isNotBlank() }
                         if (firstOriginal != null) {
@@ -261,20 +267,24 @@ fun NativeBookReader(
         }
 
         // Anchor restoration: when pages change due to translation insertion, restore position
-        // Skip if user navigated recently (< 600ms) to avoid fighting with page turns
+        // Re-pagination is already deferred until pager settles, so no time guard needed
         LaunchedEffect(pages) {
             val anchor = readingAnchor ?: return@LaunchedEffect
             if (pages.isEmpty()) return@LaunchedEffect
-            val elapsed = System.currentTimeMillis() - lastUserNavTime
-            if (elapsed < 600) return@LaunchedEffect
+            
+            // Only restore if triggered by translation toggle
+            if (!forceAnchorRestore) return@LaunchedEffect
+            
             val targetPage = findPageForAnchor(pages, anchor)
             val currentPage = pagerState.currentPage.coerceIn(0, pages.lastIndex)
-            if (targetPage != currentPage && kotlin.math.abs(targetPage - currentPage) > 1) {
+            if (targetPage != currentPage) {
                 isRestoringAnchor = true
                 pagerState.scrollToPage(targetPage)
             }
+            forceAnchorRestore = false
         }
 
+        // When bilingual mode is toggled on, translate the current page immediately
         // When bilingual mode is toggled on, translate the current page immediately
         LaunchedEffect(isBilingualMode) {
             if (isBilingualMode && pages.isNotEmpty()) {

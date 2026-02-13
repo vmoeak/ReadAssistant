@@ -127,8 +127,11 @@ class EpubParser : BookParser {
                     imageNode.replaceWith(replacement)
                 }
 
+                val prefix = entryPrefix[entry.name].orEmpty()
                 val body = doc.body().html().trim()
-                if (body.isBlank()) null else "<section>$body</section>"
+                if (body.isBlank()) null
+                else if (prefix.isNotBlank()) """<section id="$prefix">$body</section>"""
+                else "<section>$body</section>"
             }
 
             zip.close()
@@ -176,7 +179,15 @@ class EpubParser : BookParser {
                 }
                 return@forEach
             }
-            if (!href.contains("#")) return@forEach
+            if (!href.contains("#")) {
+                // File-level link without fragment — rewrite to section-level anchor
+                val resolvedTarget = resolveZipPath(baseDir, href)
+                val targetPrefix = entryPrefix[resolvedTarget]
+                    ?: entryPrefix[normalizeZipEntryKey(resolvedTarget)]
+                    ?: return@forEach
+                anchor.attr("href", "#$targetPrefix")
+                return@forEach
+            }
             val targetPathRaw = href.substringBefore('#')
             val targetId = href.substringAfter('#').trim()
             if (targetId.isBlank()) return@forEach

@@ -69,6 +69,7 @@ fun ReaderScreen(
     var seekParagraphIndex by remember { mutableStateOf<Int?>(null) }
     var seekPageIndex by remember { mutableStateOf<Int?>(null) }
     var seekProgress by remember { mutableStateOf<Float?>(null) }
+    var highlightParagraphIndex by remember { mutableStateOf<Int?>(null) }
     var paragraphToPageMap by remember(uiState.contentId) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     var initialSeekApplied by remember(uiState.contentId) { mutableStateOf(false) }
     var sliderValue by remember { mutableStateOf(0f) }
@@ -77,6 +78,12 @@ fun ReaderScreen(
     val isBook = isBookContentType(uiState.contentType)
     LaunchedEffect(uiState.contentType, uiState.contentId) {
         translationViewModel.clearTranslations()
+    }
+    LaunchedEffect(highlightParagraphIndex) {
+        if (highlightParagraphIndex != null) {
+            kotlinx.coroutines.delay(2500)
+            highlightParagraphIndex = null
+        }
     }
     LaunchedEffect(uiState.textSelection?.rect) {
         uiState.textSelection?.rect?.let { lastSelectionRect = it }
@@ -158,7 +165,9 @@ fun ReaderScreen(
                         seekProgress = null
                         seekParagraphIndex = targetParagraphIndex
                         seekCommandId += 1
+                        highlightParagraphIndex = targetParagraphIndex
                     },
+                    highlightParagraphIndex = highlightParagraphIndex,
                     isControlsVisible = showTopBar,
                     modifier = Modifier
                         .fillMaxSize()

@@ -11,7 +11,7 @@ import java.io.File
 import java.util.LinkedHashMap
 
 object BookParagraphCache {
-    private const val CACHE_SCHEMA_VERSION = 18
+    private const val CACHE_SCHEMA_VERSION = 19
     private const val CACHE_DIR_NAME = "book_paragraph_cache"
     private const val MAX_MEMORY_BOOKS = 4
 

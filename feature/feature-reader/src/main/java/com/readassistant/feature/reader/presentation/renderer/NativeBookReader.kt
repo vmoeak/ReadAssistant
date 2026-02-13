@@ -2,9 +2,12 @@ package com.readassistant.feature.reader.presentation.renderer
 
 import android.text.StaticLayout
 import android.text.TextPaint
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,7 +25,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -87,6 +89,7 @@ fun NativeBookReader(
     onParagraphsVisible: (List<Pair<Int, String>>) -> Unit,
     onSingleTap: (() -> Unit)? = null,
     onLinkClicked: ((paragraphIndex: Int) -> Unit)? = null,
+    highlightParagraphIndex: Int? = null,
     isControlsVisible: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -97,6 +100,7 @@ fun NativeBookReader(
     }
     val textColor = readerColors.onBackground
     val secondaryTextColor = readerColors.onBackground.copy(alpha = 0.72f)
+    val highlightColor = Color(0xFF5B8DEF).copy(alpha = 0.25f)
     val density = LocalDensity.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -171,7 +175,7 @@ fun NativeBookReader(
             if (seekCommandId == 0 || seekCommandId == lastHandledSeekCommandId || pages.isEmpty()) return@LaunchedEffect
             val target = when {
                 seekPageIndex != null -> seekPageIndex
-                seekParagraphIndex != null -> paragraphToPageMap[seekParagraphIndex] ?: 0
+                seekParagraphIndex != null -> findNearestPage(seekParagraphIndex, paragraphToPageMap)
                 seekProgress != null -> (seekProgress.coerceIn(0f, 1f) * pages.lastIndex.toFloat()).roundToInt()
                 else -> pagerState.currentPage
             }.coerceIn(0, pages.lastIndex)
@@ -195,12 +199,50 @@ fun NativeBookReader(
                     .fillMaxSize()
                     .padding(start = 24.dp, end = 24.dp, top = topPadding, bottom = bottomPadding)
             ) {
+                // Tap overlay BEHIND content — handles page turns for non-link areas
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(pageIndex, pages.size, onSingleTap, isControlsVisible) {
+                            detectTapGestures { offset ->
+                                if (isControlsVisible) {
+                                    onSingleTap?.invoke()
+                                    return@detectTapGestures
+                                }
+                                val width = size.width.toFloat().coerceAtLeast(1f)
+                                val leftBoundary = width * 0.20f
+                                val rightBoundary = width * 0.80f
+                                when {
+                                    offset.x < leftBoundary -> {
+                                        if (pageIndex > 0) {
+                                            scope.launch {
+                                                pagerState.animateScrollToPage((pageIndex - 1).coerceAtLeast(0))
+                                            }
+                                        }
+                                    }
+                                    offset.x > rightBoundary -> {
+                                        if (pageIndex < pages.lastIndex) {
+                                            scope.launch {
+                                                pagerState.animateScrollToPage((pageIndex + 1).coerceAtMost(pages.lastIndex))
+                                            }
+                                        }
+                                    }
+                                    else -> onSingleTap?.invoke()
+                                }
+                            }
+                        }
+                )
+
+                // Content ON TOP — ClickableText for links intercepts taps; plain Text passes through
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .fillMaxHeight()
                 ) {
                     page.items.forEachIndexed { idx, item ->
+                        val isHighlighted = highlightParagraphIndex != null && item.paragraphIndex == highlightParagraphIndex && item.isParagraphStart
+                        val highlightBg = if (isHighlighted) Modifier.background(highlightColor, RoundedCornerShape(4.dp)) else Modifier
+
                         if (!item.imageSrc.isNullOrBlank()) {
                             val imageAspect = remember(item.imageSrc) { resolveImageAspectRatio(item.imageSrc) }
                             val imageHeight = with(density) {
@@ -214,11 +256,11 @@ fun NativeBookReader(
                                 .fillMaxWidth()
                                 .heightIn(min = 140.dp, max = maxImageHeightDp)
                                 .height(imageHeight)
-                            
+
                             val localBitmap = remember(item.imageSrc, contentWidthPx, maxImageHeightPx) {
                                 decodeImageBitmap(item.imageSrc, contentWidthPx.roundToInt(), maxImageHeightPx.roundToInt())
                             }
-                            
+
                             if (localBitmap != null) {
                                 Image(
                                     bitmap = localBitmap,
@@ -320,27 +362,57 @@ fun NativeBookReader(
                                     }
                                     if (cursor < item.text.length) append(item.text.substring(cursor))
                                 }
-                                ClickableText(
+                                // Use Text + pointerInput to handle BOTH link clicks and page turns
+                                var textLayout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+                                Text(
                                     text = annotated,
                                     style = textStyle,
                                     maxLines = Int.MAX_VALUE,
                                     overflow = TextOverflow.Clip,
-                                    onClick = { offset ->
-                                        annotated.getStringAnnotations("link", offset, offset).firstOrNull()?.let { ann ->
-                                            val targetId = ann.item.removePrefix("#")
-                                            val targetParagraphIndex = anchorMap[targetId]
-                                            if (targetParagraphIndex != null) {
-                                                onLinkClicked?.invoke(targetParagraphIndex)
+                                    onTextLayout = { textLayout = it },
+                                    modifier = highlightBg.then(Modifier.pointerInput(annotated, anchorMap, pageIndex, pages.size, onSingleTap, isControlsVisible) {
+                                        detectTapGestures { tapOffset ->
+                                            val layout = textLayout ?: return@detectTapGestures
+                                            val charOffset = layout.getOffsetForPosition(tapOffset)
+                                            // Expand search radius for small targets like * or †
+                                            val ann = annotated.getStringAnnotations("link", charOffset, charOffset).firstOrNull()
+                                                ?: annotated.getStringAnnotations("link", (charOffset - 1).coerceAtLeast(0), (charOffset + 1).coerceAtMost(annotated.length)).firstOrNull()
+                                            if (ann != null) {
+                                                val targetId = ann.item.removePrefix("#")
+                                                val targetParagraphIndex = anchorMap[targetId]
+                                                android.util.Log.d("NativeBookReader", "Link clicked: href=${ann.item}, targetId=$targetId, paragraphIndex=$targetParagraphIndex, pageMapHit=${paragraphToPageMap[targetParagraphIndex]}")
+                                                if (targetParagraphIndex != null) {
+                                                    onLinkClicked?.invoke(targetParagraphIndex)
+                                                } else {
+                                                    android.util.Log.w("NativeBookReader", "Anchor not found: $targetId. Available anchors(first 20): ${anchorMap.keys.take(20)}")
+                                                }
+                                            } else {
+                                                // No link at tap position — handle page turn
+                                                if (isControlsVisible) {
+                                                    onSingleTap?.invoke()
+                                                    return@detectTapGestures
+                                                }
+                                                val width = size.width.toFloat().coerceAtLeast(1f)
+                                                when {
+                                                    tapOffset.x < width * 0.20f -> {
+                                                        if (pageIndex > 0) scope.launch { pagerState.animateScrollToPage(pageIndex - 1) }
+                                                    }
+                                                    tapOffset.x > width * 0.80f -> {
+                                                        if (pageIndex < pages.lastIndex) scope.launch { pagerState.animateScrollToPage(pageIndex + 1) }
+                                                    }
+                                                    else -> onSingleTap?.invoke()
+                                                }
                                             }
                                         }
-                                    }
+                                    })
                                 )
                             } else {
                                 Text(
                                     text = item.text,
                                     style = textStyle,
                                     maxLines = Int.MAX_VALUE,
-                                    overflow = TextOverflow.Clip
+                                    overflow = TextOverflow.Clip,
+                                    modifier = highlightBg
                                 )
                             }
                             if (isBilingualMode && item.isParagraphStart) {
@@ -364,39 +436,6 @@ fun NativeBookReader(
                         }
                     }
                 }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(pageIndex, pages.size, onSingleTap, isControlsVisible) {
-                            detectTapGestures { offset ->
-                                if (isControlsVisible) {
-                                    onSingleTap?.invoke()
-                                    return@detectTapGestures
-                                }
-                                val width = size.width.toFloat().coerceAtLeast(1f)
-                                val leftBoundary = width * 0.20f
-                                val rightBoundary = width * 0.80f
-                                when {
-                                    offset.x < leftBoundary -> {
-                                        if (pageIndex > 0) {
-                                            scope.launch {
-                                                pagerState.animateScrollToPage((pageIndex - 1).coerceAtLeast(0))
-                                            }
-                                        }
-                                    }
-                                    offset.x > rightBoundary -> {
-                                        if (pageIndex < pages.lastIndex) {
-                                            scope.launch {
-                                                pagerState.animateScrollToPage((pageIndex + 1).coerceAtMost(pages.lastIndex))
-                                            }
-                                        }
-                                    }
-                                    else -> onSingleTap?.invoke()
-                                }
-                            }
-                        }
-                )
             }
         }
     }
@@ -472,23 +511,86 @@ private fun extractTextAndLinks(html: String, fallbackText: String): Pair<String
         return fallbackText.replace(Regex("\\s+"), " ").trim() to emptyList()
     }
     val doc = Jsoup.parse(html)
-    val plainText = doc.text().replace(Regex("\\s+"), " ").trim()
-    val anchors = doc.select("a[href]")
-    if (anchors.isEmpty()) return plainText to emptyList()
-
+    val sb = StringBuilder()
     val links = mutableListOf<LinkSpan>()
-    for (anchor in anchors) {
-        val href = anchor.attr("href").trim()
-        if (href.isBlank() || !href.startsWith("#")) continue
-        val linkText = anchor.text().replace(Regex("\\s+"), " ").trim()
-        if (linkText.isBlank()) continue
-        val idx = plainText.indexOf(linkText)
-        if (idx < 0) continue
-        // Avoid duplicate spans at the same position
-        if (links.any { it.start == idx && it.end == idx + linkText.length }) continue
-        links += LinkSpan(start = idx, end = idx + linkText.length, href = href)
+    // Walk the DOM tree to build plain text and track link positions precisely
+    walkNode(doc.body(), sb, links, null)
+    val plainText = sb.toString().replace(Regex("\\s+"), " ").trim()
+    // Recompute link offsets after whitespace normalization
+    return plainText to remapLinksAfterNormalization(sb.toString(), plainText, links)
+}
+
+private fun walkNode(
+    node: org.jsoup.nodes.Node,
+    sb: StringBuilder,
+    links: MutableList<LinkSpan>,
+    currentHref: String?
+) {
+    when (node) {
+        is org.jsoup.nodes.TextNode -> {
+            val text = node.wholeText
+            if (text.isNotEmpty()) {
+                sb.append(text)
+            }
+        }
+        is org.jsoup.nodes.Element -> {
+            val isLink = node.tagName() == "a" && node.hasAttr("href")
+            val href = if (isLink) {
+                val h = node.attr("href").trim()
+                if (h.isNotBlank() && h.startsWith("#")) h else null
+            } else {
+                currentHref
+            }
+            val linkStart = if (isLink && href != null) sb.length else -1
+            for (child in node.childNodes()) {
+                walkNode(child, sb, links, href ?: currentHref)
+            }
+            if (isLink && href != null && linkStart >= 0 && sb.length > linkStart) {
+                links += LinkSpan(start = linkStart, end = sb.length, href = href)
+            }
+        }
     }
-    return plainText to links
+}
+
+private fun remapLinksAfterNormalization(
+    raw: String,
+    normalized: String,
+    links: List<LinkSpan>
+): List<LinkSpan> {
+    if (links.isEmpty()) return emptyList()
+    // Build mapping: raw char index → normalized char index
+    val rawToNorm = IntArray(raw.length + 1) { -1 }
+    var ni = 0
+    var ri = 0
+    // Skip leading whitespace in normalized (it's trimmed)
+    val leadingTrimmed = raw.length - raw.trimStart().length
+    ri = leadingTrimmed
+    ni = 0
+    while (ri < raw.length && ni < normalized.length) {
+        if (raw[ri] == normalized[ni]) {
+            rawToNorm[ri] = ni
+            ri++
+            ni++
+        } else if (raw[ri].isWhitespace()) {
+            // This whitespace was collapsed or trimmed
+            rawToNorm[ri] = ni
+            ri++
+        } else {
+            // Should not happen in normal cases
+            ri++
+        }
+    }
+    // Map remaining chars
+    while (ri <= raw.length) {
+        rawToNorm[ri] = ni.coerceAtMost(normalized.length)
+        ri++
+    }
+    return links.mapNotNull { link ->
+        val newStart = rawToNorm.getOrNull(link.start) ?: return@mapNotNull null
+        val newEnd = rawToNorm.getOrNull(link.end) ?: rawToNorm.getOrNull(link.end.coerceAtMost(raw.length)) ?: return@mapNotNull null
+        if (newStart >= newEnd || newStart >= normalized.length) return@mapNotNull null
+        LinkSpan(start = newStart, end = newEnd.coerceAtMost(normalized.length), href = link.href)
+    }
 }
 
 private fun buildAnchorMap(paragraphs: List<ReaderParagraph>): Map<String, Int> {
@@ -702,6 +804,24 @@ private fun buildStaticLayout(
         .setIncludePad(false)
         .setLineSpacing(extraSpacing, 1f)
         .build()
+}
+
+private fun findNearestPage(paragraphIndex: Int, paragraphToPageMap: Map<Int, Int>): Int {
+    paragraphToPageMap[paragraphIndex]?.let { return it }
+    // If exact paragraph isn't in the page map (filtered out), find the nearest one after it
+    for (offset in 1..50) {
+        paragraphToPageMap[paragraphIndex + offset]?.let {
+            android.util.Log.d("NativeBookReader", "findNearestPage: exact $paragraphIndex not found, using ${paragraphIndex + offset} → page $it")
+            return it
+        }
+        if (paragraphIndex - offset >= 0) {
+            paragraphToPageMap[paragraphIndex - offset]?.let {
+                android.util.Log.d("NativeBookReader", "findNearestPage: exact $paragraphIndex not found, using ${paragraphIndex - offset} → page $it")
+                return it
+            }
+        }
+    }
+    return 0
 }
 
 private fun buildParagraphToPageMap(pages: List<ReaderPage>): Map<Int, Int> {

@@ -73,6 +73,7 @@ import com.readassistant.core.ui.theme.sepiaReaderColors
 import com.readassistant.feature.reader.presentation.reader.ReaderParagraph
 import com.readassistant.feature.translation.domain.TranslationPair
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.jsoup.Jsoup
 import java.io.File
@@ -160,11 +161,15 @@ fun NativeBookReader(
             translations.filterValues { it.isComplete && it.translatedText.isNotBlank() && !it.translatedText.startsWith("[") }.keys
         }
 
+        // Stable completed keys — only update when pager is NOT scrolling
+        // This prevents expensive re-pagination from running mid-animation
+        var stableCompletedKeys by remember { mutableStateOf(emptySet<Int>()) }
+        var stableTranslations by remember { mutableStateOf(emptyMap<Int, TranslationPair>()) }
+
         // Build bilingual entries when mode is on — interleave completed translations
-        val paginationEntries = remember(entries, isBilingualMode, completedTranslationKeys) {
-            if (isBilingualMode && completedTranslationKeys.isNotEmpty()) {
-                val completedMap = translations.filterValues { it.isComplete && it.translatedText.isNotBlank() && !it.translatedText.startsWith("[") }
-                buildBilingualEntries(entries, completedMap)
+        val paginationEntries = remember(entries, isBilingualMode, stableCompletedKeys) {
+            if (isBilingualMode && stableCompletedKeys.isNotEmpty()) {
+                buildBilingualEntries(entries, stableTranslations)
             } else {
                 entries
             }
@@ -189,6 +194,18 @@ fun NativeBookReader(
             pageCount = { pages.size.coerceAtLeast(1) }
         )
 
+        // Defer translation-triggered re-pagination until pager settles
+        LaunchedEffect(completedTranslationKeys) {
+            if (completedTranslationKeys == stableCompletedKeys) return@LaunchedEffect
+            // Wait until pager finishes any active scroll/animation
+            snapshotFlow { pagerState.isScrollInProgress }
+                .first { !it }
+            stableCompletedKeys = completedTranslationKeys
+            stableTranslations = translations.filterValues {
+                it.isComplete && it.translatedText.isNotBlank() && !it.translatedText.startsWith("[")
+            }
+        }
+
         LaunchedEffect(paragraphToPageMap) {
             onParagraphPageMapChanged?.invoke(paragraphToPageMap)
         }
@@ -196,6 +213,7 @@ fun NativeBookReader(
         // Anchor state for position stability across re-pagination
         var readingAnchor by remember { mutableStateOf<ReadingAnchor?>(null) }
         var isRestoringAnchor by remember { mutableStateOf(false) }
+        var lastUserNavTime by remember { mutableStateOf(0L) }
 
         // Helper to collect visible paragraphs on a given page + prefetch buffer (±1 page)
         fun collectVisibleParagraphs(pageIndex: Int): List<Pair<Int, String>> {
@@ -225,6 +243,7 @@ fun NativeBookReader(
 
                     // Update reading anchor from current page's first non-translation entry
                     if (!isRestoringAnchor) {
+                        lastUserNavTime = System.currentTimeMillis()
                         val firstOriginal = pages.getOrNull(safePage)?.items
                             ?.firstOrNull { !it.isTranslation && it.imageSrc.isNullOrBlank() && it.text.isNotBlank() }
                         if (firstOriginal != null) {
@@ -242,12 +261,15 @@ fun NativeBookReader(
         }
 
         // Anchor restoration: when pages change due to translation insertion, restore position
+        // Skip if user navigated recently (< 600ms) to avoid fighting with page turns
         LaunchedEffect(pages) {
             val anchor = readingAnchor ?: return@LaunchedEffect
             if (pages.isEmpty()) return@LaunchedEffect
+            val elapsed = System.currentTimeMillis() - lastUserNavTime
+            if (elapsed < 600) return@LaunchedEffect
             val targetPage = findPageForAnchor(pages, anchor)
             val currentPage = pagerState.currentPage.coerceIn(0, pages.lastIndex)
-            if (targetPage != currentPage) {
+            if (targetPage != currentPage && kotlin.math.abs(targetPage - currentPage) > 1) {
                 isRestoringAnchor = true
                 pagerState.scrollToPage(targetPage)
             }

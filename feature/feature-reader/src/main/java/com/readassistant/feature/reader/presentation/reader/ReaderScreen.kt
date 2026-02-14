@@ -109,9 +109,9 @@ fun ReaderScreen(
             seekCommandId += 1
         }
     }
-    LaunchedEffect(uiState.htmlContent) {
-        if (uiState.htmlContent.isNotBlank()) webPageRenderReady = false
-    }
+    // webPageRenderReady is reset to false by the WebViewReader's update block
+    // (via onPageRenderReady callback) when new content is loaded, so no need
+    // for an additional LaunchedEffect reset here.
     val progressLabel = if (isBook && uiState.bookParagraphs.isNotEmpty()) {
         val percent = (uiState.progressPercent * 100f).coerceIn(0f, 100f).roundToInt()
         if (uiState.totalChapters > 1) {

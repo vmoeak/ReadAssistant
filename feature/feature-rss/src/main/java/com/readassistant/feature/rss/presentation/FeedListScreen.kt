@@ -7,9 +7,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -42,15 +45,32 @@ fun FeedListScreen(onFeedClick: (Long) -> Unit, viewModel: FeedListViewModel = h
     val isLoading by viewModel.isLoading.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
 
+    val pullRefreshState = rememberPullToRefreshState()
+    if (pullRefreshState.isRefreshing) {
+        LaunchedEffect(true) {
+            viewModel.refreshAll()
+        }
+    }
+    LaunchedEffect(isLoading) {
+        if (!isLoading) pullRefreshState.endRefresh()
+    }
+
     Scaffold(
         topBar = { TopAppBar(title = { Text("Feeds") }) },
         floatingActionButton = { FloatingActionButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.Add, contentDescription = "Add Feed") } }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .nestedScroll(pullRefreshState.nestedScrollConnection)
+        ) {
             if (feeds.isEmpty() && !isLoading) {
-                Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.RssFeed, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(16.dp)); Text("No feeds yet", style = MaterialTheme.typography.titleMedium); Text("Tap + to add an RSS feed")
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.RssFeed, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(16.dp)); Text("No feeds yet", style = MaterialTheme.typography.titleMedium); Text("Tap + to add an RSS feed")
+                    }
                 }
             }
             LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -64,7 +84,10 @@ fun FeedListScreen(onFeedClick: (Long) -> Unit, viewModel: FeedListViewModel = h
                     )
                 }
             }
-            if (isLoading) CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            PullToRefreshContainer(
+                state = pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
     if (showAddDialog) {

@@ -61,7 +61,9 @@ class ReaderViewModel @Inject constructor(
             "RSS_ARTICLE" -> {
                 val a = articleDao.getArticleById(contentIdLong)
                 if (a != null) {
-                    val content = a.extractedContent?.ifEmpty { null } ?: a.content
+                    val content = a.extractedContent?.ifEmpty { null }
+                        ?: a.content.ifEmpty { null }
+                        ?: a.description
                     val savedProgress = readSavedProgress(ContentType.RSS_ARTICLE.name, contentIdLong)
                     _uiState.update {
                         it.copy(

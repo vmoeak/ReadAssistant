@@ -33,13 +33,17 @@ class RssRepositoryImpl @Inject constructor(
     suspend fun refreshFeed(feedId: Long) {
         val feed = feedDao.getFeedById(feedId) ?: return
         val result = fetcher.fetchFeed(feed.url)
-        articleDao.insertAll(result.articles.map { it.copy(feedId = feedId) })
+        val newArticles = result.articles.map { it.copy(feedId = feedId) }
+            .filter { it.link.isNotBlank() }
+            .filter { articleDao.getArticleByLink(it.link) == null }
+        if (newArticles.isNotEmpty()) articleDao.insertAll(newArticles)
         feedDao.updateUnreadCount(feedId, articleDao.getUnreadCount(feedId))
         feedDao.updateLastFetched(feedId, System.currentTimeMillis())
     }
 
     suspend fun refreshAllFeeds() {
-        feedDao.getAllFeeds().collect { feeds -> feeds.forEach { try { refreshFeed(it.id) } catch (_: Exception) {} }; return@collect }
+        val feeds = feedDao.getAllFeedsSync()
+        feeds.forEach { try { refreshFeed(it.id) } catch (_: Exception) {} }
     }
 
     suspend fun deleteFeed(feedId: Long) { feedDao.getFeedById(feedId)?.let { feedDao.delete(it) } }

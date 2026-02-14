@@ -46,7 +46,7 @@ fun ArticleListScreen(onArticleClick: (Long) -> Unit, onBack: () -> Unit, viewMo
             items(articles, key = { it.id }) { article ->
                 ListItem(
                     headlineContent = { Text(article.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = if (!article.isRead) FontWeight.Bold else FontWeight.Normal) },
-                    supportingContent = { Column { if (article.description.isNotBlank()) Text(article.description.take(120), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Text(dateFormat.format(Date(article.publishedAt)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+                    supportingContent = { Column { val desc = article.description.replace(Regex("<[^>]*>"), "").trim(); if (desc.isNotBlank()) Text(desc.take(120), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Text(dateFormat.format(Date(article.publishedAt)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
                     trailingContent = { IconButton(onClick = { viewModel.toggleStar(article.id) }) { Icon(if (article.isStarred) Icons.Default.Star else Icons.Default.StarBorder, contentDescription = "Star", tint = if (article.isStarred) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) } },
                     modifier = Modifier.clickable { viewModel.markRead(article.id); onArticleClick(article.id) }
                 )

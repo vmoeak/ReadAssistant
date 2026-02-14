@@ -1,8 +1,11 @@
 package com.readassistant.feature.reader.presentation.reader
 
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,11 +13,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import kotlinx.coroutines.launch
@@ -24,9 +31,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlin.math.roundToInt
 import com.readassistant.core.domain.model.ContentType
@@ -36,6 +45,7 @@ import com.readassistant.core.ui.theme.*
 import com.readassistant.feature.reader.presentation.renderer.NativeBookReader
 import com.readassistant.feature.chat.presentation.ChatBottomSheet
 import com.readassistant.feature.reader.presentation.renderer.WebViewReader
+import com.readassistant.feature.reader.presentation.renderer.generateReaderCss
 import com.readassistant.feature.reader.presentation.toolbar.ReaderTopBar
 import com.readassistant.feature.reader.presentation.toolbar.SettingsPanel
 import com.readassistant.feature.translation.presentation.TranslationViewModel
@@ -75,6 +85,7 @@ fun ReaderScreen(
     var sliderValue by remember { mutableStateOf(0f) }
     var sliderDragging by remember { mutableStateOf(false) }
     var lastSelectionRect by remember { mutableStateOf<SelectionRect?>(null) }
+    var showOriginalPage by remember { mutableStateOf(false) }
     val isBook = isBookContentType(uiState.contentType)
     LaunchedEffect(uiState.contentType, uiState.contentId) {
         translationViewModel.clearTranslations()
@@ -120,10 +131,7 @@ fun ReaderScreen(
             "$percent%"
         }
     } else null
-    val readerBottomInset = when {
-        !isBook && showTopBar -> 72.dp
-        else -> 0.dp
-    }
+    val readerBottomInset = 0.dp
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -194,7 +202,7 @@ fun ReaderScreen(
                     },
                     onPageRenderReady = { ready -> webPageRenderReady = ready },
                     pagedMode = false,
-                    onSwipeLeft = null,
+                    onSwipeLeft = if (uiState.originalLink.isNotBlank()) {{ showOriginalPage = true }} else null,
                     onSwipeRight = null,
                     onPageChanged = null,
                     onChaptersExtracted = null,
@@ -379,6 +387,25 @@ fun ReaderScreen(
         }
     }
 
+    // In-app original page viewer
+    AnimatedVisibility(
+        visible = showOriginalPage && uiState.originalLink.isNotBlank(),
+        enter = slideInHorizontally(initialOffsetX = { it }),
+        exit = slideOutHorizontally(targetOffsetX = { it })
+    ) {
+        OriginalPageViewer(
+            url = uiState.originalLink,
+            title = uiState.title,
+            themeType = rtt,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            onBack = { showOriginalPage = false }
+        )
+    }
+    if (showOriginalPage) {
+        BackHandler { showOriginalPage = false }
+    }
+
     // Show ChatBottomSheet when Ask AI is triggered
     if (uiState.showChatSheet) {
         ChatBottomSheet(
@@ -481,4 +508,147 @@ fun ReaderScreen(
 private fun isBookContentType(type: ContentType): Boolean = when (type) {
     ContentType.RSS_ARTICLE, ContentType.WEB_ARTICLE -> false
     else -> true
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OriginalPageViewer(
+    url: String,
+    title: String,
+    themeType: ReadingThemeType,
+    fontSize: Float,
+    lineHeight: Float,
+    onBack: () -> Unit
+) {
+    var isBilingual by remember { mutableStateOf(false) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    val rc = when (themeType) {
+        ReadingThemeType.LIGHT -> lightReaderColors
+        ReadingThemeType.SEPIA -> sepiaReaderColors
+        ReadingThemeType.DARK -> darkReaderColors
+    }
+
+    Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            TopAppBar(
+                title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        isBilingual = !isBilingual
+                        val wv = webViewRef ?: return@IconButton
+                        if (isBilingual) {
+                            // Inject translation extraction script
+                            val css = generateReaderCss(themeType, fontSize, lineHeight)
+                            val translationStyle = css.substringAfter(".translation{", "").substringBefore("}")
+                            wv.evaluateJavascript("""
+                                (function(){
+                                    if(!document.getElementById('ra-trans-style')){
+                                        var s=document.createElement('style');
+                                        s.id='ra-trans-style';
+                                        s.textContent='.ra-translation{display:block!important;clear:both;float:none;position:relative;width:100%;box-sizing:border-box;$translationStyle} .ra-translation:empty{display:none!important}';
+                                        document.head.appendChild(s);
+                                    }
+                                    var skip='nav,header,footer,aside,.nav,.navbar,.menu,.sidebar,.breadcrumb,.header,.footer,[role=navigation],[role=banner],[role=contentinfo]';
+                                    function isInSkip(el){var p=el;while(p){if(p.matches&&p.matches(skip))return true;p=p.parentElement;}return false;}
+                                    var article=document.querySelector('article,[role=main],.post-content,.article-content,.entry-content,main,.content,#content');
+                                    var scope=article||document.body;
+                                    var ps=scope.querySelectorAll('p,h1,h2,h3,h4,li,blockquote');
+                                    var texts=[];
+                                    ps.forEach(function(p,i){
+                                        var t=(p.textContent||'').trim();
+                                        if(t.length<10) return;
+                                        if(isInSkip(p)) return;
+                                        p.setAttribute('data-ra-idx',i);
+                                        texts.push(i+'||'+t);
+                                    });
+                                    if(typeof Android!=='undefined'&&Android.onOriginalPageParagraphs){
+                                        Android.onOriginalPageParagraphs(texts.join('@@SEP@@'));
+                                    }
+                                })();
+                            """.trimIndent(), null)
+                        } else {
+                            wv.evaluateJavascript(
+                                "document.querySelectorAll('.ra-translation').forEach(function(e){e.remove()});",
+                                null
+                            )
+                        }
+                    }) {
+                        Icon(
+                            Icons.Default.Translate,
+                            contentDescription = "Translate",
+                            tint = if (isBilingual) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = rc.background),
+                windowInsets = WindowInsets(0, 0, 0, 0)
+            )
+        },
+        containerColor = rc.background
+    ) { padding ->
+        val translationVM: TranslationViewModel = hiltViewModel()
+        val translations by translationVM.translations.collectAsState()
+
+        // Apply translations as they arrive
+        LaunchedEffect(translations) {
+            val wv = webViewRef ?: return@LaunchedEffect
+            if (!isBilingual) return@LaunchedEffect
+            translations.forEach { (idx, pair) ->
+                val escaped = pair.translatedText
+                    .replace("\\", "\\\\")
+                    .replace("'", "\\'")
+                    .replace("\n", "\\n")
+                wv.evaluateJavascript("""
+                    (function(){
+                        var p=document.querySelector('[data-ra-idx="$idx"]');
+                        if(!p)return;
+                        if(!('$escaped').trim())return;
+                        var t=p.nextElementSibling;
+                        if(!t||!t.classList.contains('ra-translation')){
+                            t=document.createElement('div');
+                            t.className='ra-translation';
+                            p.parentNode.insertBefore(t,p.nextSibling);
+                        }
+                        t.textContent='$escaped';
+                    })();
+                """.trimIndent(), null)
+            }
+        }
+
+        AndroidView(
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.loadWithOverviewMode = true
+                    settings.useWideViewPort = true
+                    webViewClient = WebViewClient()
+                    addJavascriptInterface(object {
+                        @android.webkit.JavascriptInterface
+                        fun onOriginalPageParagraphs(data: String) {
+                            if (data.isBlank()) return
+                            val pairs = data.split("@@SEP@@").mapNotNull { entry ->
+                                val parts = entry.split("||", limit = 2)
+                                if (parts.size == 2) parts[0].toIntOrNull()?.let { it to parts[1] } else null
+                            }
+                            translationVM.translateParagraphs(pairs)
+                        }
+                    }, "Android")
+                    loadUrl(url)
+                    webViewRef = this
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        )
+    }
 }

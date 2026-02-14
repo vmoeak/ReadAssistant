@@ -17,6 +17,11 @@ val LightColorScheme = lightColorScheme(
     surface = LightSurface,
     onSurface = LightOnSurface,
     surfaceVariant = LightSurfaceVariant,
+    surfaceContainer = LightSurface,
+    surfaceContainerLow = LightBackground,
+    surfaceContainerHigh = LightSurfaceVariant,
+    surfaceContainerHighest = LightSurfaceVariant,
+    surfaceContainerLowest = LightBackground,
     outline = LightOutline
 )
 
@@ -30,6 +35,11 @@ val SepiaColorScheme = lightColorScheme(
     surface = SepiaSurface,
     onSurface = SepiaOnSurface,
     surfaceVariant = SepiaSurfaceVariant,
+    surfaceContainer = SepiaSurface,
+    surfaceContainerLow = SepiaBackground,
+    surfaceContainerHigh = SepiaSurfaceVariant,
+    surfaceContainerHighest = SepiaSurfaceVariant,
+    surfaceContainerLowest = SepiaBackground,
     outline = SepiaOutline
 )
 
@@ -43,6 +53,11 @@ val DarkColorScheme = darkColorScheme(
     surface = DarkSurface,
     onSurface = DarkOnSurface,
     surfaceVariant = DarkSurfaceVariant,
+    surfaceContainer = DarkSurface,
+    surfaceContainerLow = DarkBackground,
+    surfaceContainerHigh = DarkSurfaceVariant,
+    surfaceContainerHighest = DarkSurfaceVariant,
+    surfaceContainerLowest = DarkBackground,
     outline = DarkOutline
 )
 

@@ -56,6 +56,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun loadContent() { viewModelScope.launch {
+        android.util.Log.w("ReadAssistant", "loadContent START type=$contentTypeStr id=$contentIdLong")
         _uiState.update { it.copy(isLoading = contentTypeStr != "BOOK") }
         try { when (contentTypeStr) {
             "RSS_ARTICLE" -> {
@@ -72,9 +73,11 @@ class ReaderViewModel @Inject constructor(
                             htmlContent = content,
                             contentType = ContentType.RSS_ARTICLE,
                             contentId = contentIdLong,
-                            progressPercent = savedProgress
+                            progressPercent = savedProgress,
+                            originalLink = a.link
                         )
                     }
+                    android.util.Log.w("ReadAssistant", "RSS loaded: title=${a.title} htmlLen=${content.length}")
                     if (!a.isRead) {
                         articleDao.updateReadStatus(contentIdLong, true)
                         val unreadCount = articleDao.getUnreadCount(a.feedId)
@@ -86,6 +89,7 @@ class ReaderViewModel @Inject constructor(
             }
             "WEB_ARTICLE" -> {
                 val a = webArticleDao.getArticleById(contentIdLong)
+                android.util.Log.w("ReadAssistant", "WEB_ARTICLE fetched: found=${a != null} id=$contentIdLong title=${a?.title} contentLen=${a?.content?.length}")
                 if (a != null) {
                     val savedProgress = readSavedProgress(ContentType.WEB_ARTICLE.name, contentIdLong)
                     _uiState.update {
@@ -95,10 +99,13 @@ class ReaderViewModel @Inject constructor(
                             htmlContent = a.content,
                             contentType = ContentType.WEB_ARTICLE,
                             contentId = contentIdLong,
-                            progressPercent = savedProgress
+                            progressPercent = savedProgress,
+                            originalLink = a.url
                         )
                     }
+                    android.util.Log.w("ReadAssistant", "WEB_ARTICLE uiState: isLoading=${_uiState.value.isLoading} htmlLen=${_uiState.value.htmlContent.length}")
                 } else {
+                    android.util.Log.w("ReadAssistant", "WEB_ARTICLE not found id=$contentIdLong")
                     _uiState.update { it.copy(isLoading = false, error = "Article not found") }
                 }
             }

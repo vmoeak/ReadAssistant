@@ -89,6 +89,15 @@ fun ReaderScreen(
     val isBook = isBookContentType(uiState.contentType)
     LaunchedEffect(uiState.contentType, uiState.contentId) {
         translationViewModel.clearTranslations()
+        showOriginalPage = false
+    }
+    // Auto-open original page when extracted content is empty (e.g. JS-rendered sites)
+    LaunchedEffect(uiState.isLoading, uiState.htmlContent) {
+        if (!uiState.isLoading && !isBook && uiState.htmlContent.isBlank()
+            && uiState.error == null && uiState.originalLink.isNotBlank()
+            && !showOriginalPage) {
+            showOriginalPage = true
+        }
     }
     LaunchedEffect(highlightParagraphIndex) {
         if (highlightParagraphIndex != null) {
@@ -141,6 +150,25 @@ fun ReaderScreen(
         Box(Modifier.fillMaxSize()) {
             when {
                 uiState.error != null -> Text(uiState.error!!, Modifier.align(Alignment.Center).padding(16.dp), color = MaterialTheme.colorScheme.error)
+                !uiState.isLoading && !isBook && uiState.htmlContent.isBlank() -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center
+                    ) {
+                        Text(
+                            "Content could not be extracted",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (uiState.originalLink.isNotBlank()) {
+                            Spacer(Modifier.height(16.dp))
+                            Button(onClick = { showOriginalPage = true }) {
+                                Text("View Original Page")
+                            }
+                        }
+                    }
+                }
                 isBook -> NativeBookReader(
                     paragraphs = uiState.bookParagraphs,
                     themeType = rtt,
@@ -529,6 +557,42 @@ private fun OriginalPageViewer(
         ReadingThemeType.DARK -> darkReaderColors
     }
 
+    val translationVM: TranslationViewModel = hiltViewModel()
+    val translations by translationVM.translations.collectAsState()
+    val translationCss = remember(themeType, fontSize, lineHeight) {
+        val css = generateReaderCss(themeType, fontSize, lineHeight)
+        css.substringAfter(".translation{", "color:#555;").substringBefore("}")
+    }
+
+    // When bilingual mode is re-enabled, re-inject already cached translations.
+    // data-ra-idx attributes persist across toggle cycles, so we can inject immediately
+    // without waiting for paragraph extraction to run again.
+    LaunchedEffect(isBilingual) {
+        if (!isBilingual) return@LaunchedEffect
+        val wv = webViewRef ?: return@LaunchedEffect
+        translations.forEach { (idx, pair) ->
+            val escaped = pair.translatedText
+                .replace("\\", "\\\\")
+                .replace("'", "\\'")
+                .replace("\n", "\\n")
+            wv.evaluateJavascript("""
+                (function(){
+                    var p=document.querySelector('[data-ra-idx="$idx"]');
+                    if(!p)return;
+                    if(!('$escaped').trim())return;
+                    var t=p.nextElementSibling;
+                    if(!t||!t.classList.contains('ra-translation')){
+                        t=document.createElement('div');
+                        t.className='ra-translation';
+                        t.setAttribute("style","display:block;$translationCss");
+                        p.parentNode.insertBefore(t,p.nextSibling);
+                    }
+                    t.textContent='$escaped';
+                })();
+            """.trimIndent(), null)
+        }
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
@@ -553,20 +617,34 @@ private fun OriginalPageViewer(
                                         var s=document.createElement('style');
                                         s.id='ra-trans-style';
                                         s.textContent='.ra-translation{display:block!important;clear:both;float:none;position:relative;width:100%;box-sizing:border-box;$translationStyle} .ra-translation:empty{display:none!important}';
-                                        document.head.appendChild(s);
+                                        (document.head||document.documentElement).appendChild(s);
                                     }
                                     var skip='nav,header,footer,aside,.nav,.navbar,.menu,.sidebar,.breadcrumb,.header,.footer,[role=navigation],[role=banner],[role=contentinfo]';
                                     function isInSkip(el){var p=el;while(p){if(p.matches&&p.matches(skip))return true;p=p.parentElement;}return false;}
-                                    var article=document.querySelector('article,[role=main],.post-content,.article-content,.entry-content,main,.content,#content');
-                                    var scope=article||document.body;
-                                    var ps=scope.querySelectorAll('p,h1,h2,h3,h4,li,blockquote');
+                                    function isLeafText(el){
+                                        for(var c=0;c<el.children.length;c++){
+                                            var child=el.children[c];
+                                            var tag=child.tagName;
+                                            if(tag==='BR'||tag==='IMG'||tag==='SVG'||tag==='A')continue;
+                                            if((child.textContent||'').trim().length>=10)return false;
+                                        }
+                                        return true;
+                                    }
+                                    var scope=document.body;
+                                    var all=scope.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,blockquote,div,span');
                                     var texts=[];
-                                    ps.forEach(function(p,i){
-                                        var t=(p.textContent||'').trim();
-                                        if(t.length<10) return;
-                                        if(isInSkip(p)) return;
-                                        p.setAttribute('data-ra-idx',i);
-                                        texts.push(i+'||'+t);
+                                    var seenTexts=new Set();
+                                    var idx=0;
+                                    all.forEach(function(el){
+                                        var t=(el.textContent||'').trim();
+                                        if(t.length<10)return;
+                                        if(isInSkip(el))return;
+                                        if(!isLeafText(el))return;
+                                        if(seenTexts.has(t))return;
+                                        seenTexts.add(t);
+                                        el.setAttribute('data-ra-idx',idx);
+                                        texts.push(idx+'||'+t);
+                                        idx++;
                                     });
                                     if(typeof Android!=='undefined'&&Android.onOriginalPageParagraphs){
                                         Android.onOriginalPageParagraphs(texts.join('@@SEP@@'));
@@ -594,10 +672,7 @@ private fun OriginalPageViewer(
         },
         containerColor = rc.background
     ) { padding ->
-        val translationVM: TranslationViewModel = hiltViewModel()
-        val translations by translationVM.translations.collectAsState()
-
-        // Apply translations as they arrive
+        // Apply translations as they arrive from the ViewModel
         LaunchedEffect(translations) {
             val wv = webViewRef ?: return@LaunchedEffect
             if (!isBilingual) return@LaunchedEffect
@@ -615,6 +690,7 @@ private fun OriginalPageViewer(
                         if(!t||!t.classList.contains('ra-translation')){
                             t=document.createElement('div');
                             t.className='ra-translation';
+                            t.setAttribute("style","display:block;$translationCss");
                             p.parentNode.insertBefore(t,p.nextSibling);
                         }
                         t.textContent='$escaped';

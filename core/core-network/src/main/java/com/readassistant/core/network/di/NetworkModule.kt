@@ -63,7 +63,7 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideOkHttpClient(
-        @DefaultOkHttpClient client: OkHttpClient
+        @StreamingOkHttpClient client: OkHttpClient
     ): OkHttpClient = client
 
     @Provides

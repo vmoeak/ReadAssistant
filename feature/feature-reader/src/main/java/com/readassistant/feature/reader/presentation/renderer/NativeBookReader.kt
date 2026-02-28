@@ -38,6 +38,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
@@ -74,6 +75,8 @@ import com.readassistant.feature.reader.presentation.reader.ReaderParagraph
 import com.readassistant.feature.translation.domain.TranslationPair
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.jsoup.Jsoup
 import java.io.File
@@ -175,18 +178,24 @@ fun NativeBookReader(
             }
         }
 
-        val pages = remember(paginationEntries, contentWidthPx, contentHeightPx, fontSize, lineHeight) {
-            paginateEntries(
-                entries = paginationEntries,
-                contentWidthPx = contentWidthPx,
-                contentHeightPx = contentHeightPx,
-                fontSizePx = fontSizePx,
-                lineHeight = lineHeight,
-                maxImageHeightPx = maxImageHeightPx,
-                paragraphGapPx = paragraphGapPx,
-                density = density.density
-            )
+        val pagesState = produceState(
+            initialValue = emptyList<ReaderPage>(),
+            paginationEntries, contentWidthPx, contentHeightPx, fontSize, lineHeight
+        ) {
+            value = withContext(Dispatchers.Default) {
+                paginateEntries(
+                    entries = paginationEntries,
+                    contentWidthPx = contentWidthPx,
+                    contentHeightPx = contentHeightPx,
+                    fontSizePx = fontSizePx,
+                    lineHeight = lineHeight,
+                    maxImageHeightPx = maxImageHeightPx,
+                    paragraphGapPx = paragraphGapPx,
+                    density = density.density
+                )
+            }
         }
+        val pages = pagesState.value
         val paragraphToPageMap = remember(pages) { buildParagraphToPageMap(pages) }
 
         val pagerState = rememberPagerState(

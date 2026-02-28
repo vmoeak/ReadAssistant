@@ -49,7 +49,31 @@ class ReaderViewModel @Inject constructor(
     private var pendingInitialBookPageIndex: Int? = null
 
     init {
-        loadContent()
+        // Fast path for books: try memory cache first for instant open ("秒开")
+        if (contentTypeStr == "BOOK" && contentIdLong > 0) {
+            viewModelScope.launch {
+                val cached = bookReadingRepository.tryLoadFromMemoryCache(contentIdLong)
+                if (cached != null && _uiState.value.bookParagraphs.isEmpty()) {
+                    val contentType = try { ContentType.valueOf(cached.formatName) } catch (_: Exception) { ContentType.EPUB }
+                    val savedProgress = readSavedProgress(contentType.name, contentIdLong)
+                    val savedPageIndex = readSavedBookPageIndex(contentIdLong)
+                    applyBookContent(
+                        title = cached.title,
+                        formatName = cached.formatName,
+                        contentId = contentIdLong,
+                        structured = cached.structured,
+                        initialProgress = savedProgress,
+                        initialPageIndex = savedPageIndex
+                    )
+                    android.util.Log.w("ReadAssistant", "Book $contentIdLong opened instantly from memory cache")
+                } else {
+                    // Memory cache miss — fall back to normal loading
+                    loadContent()
+                }
+            }
+        } else {
+            loadContent()
+        }
         viewModelScope.launch {
             noteDao.getNotesByContent(_uiState.value.contentType.name, contentIdLong).collect { n -> _uiState.update { it.copy(notes = n) } }
         }

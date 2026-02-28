@@ -91,6 +91,30 @@ class BookReadingRepository @Inject constructor(
         }
     }
 
+    /**
+     * Attempt to load book content from memory cache only (no disk or parse fallback).
+     * Returns non-null when the memory LRU cache is already warmed for this book,
+     * enabling instant ("秒开") reader open.
+     */
+    suspend fun tryLoadFromMemoryCache(bookId: Long): LoadedBookContent? {
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val book = bookDao.getBookById(bookId) ?: return@runCatching null
+                val cached = BookParagraphCache.readMemoryCachedContent(
+                    bookId = book.id,
+                    fileSize = book.fileSize,
+                    sourcePath = book.filePath
+                ) ?: return@runCatching null
+                LoadedBookContent(
+                    id = book.id,
+                    title = book.title,
+                    formatName = book.format,
+                    structured = cached
+                )
+            }.getOrNull()
+        }
+    }
+
     suspend fun loadBookForReading(bookId: Long): LoadedBookContent? {
         return withContext(Dispatchers.IO) {
             runCatching {

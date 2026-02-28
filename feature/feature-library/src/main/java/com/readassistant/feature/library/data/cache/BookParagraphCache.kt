@@ -13,7 +13,7 @@ import java.util.LinkedHashMap
 object BookParagraphCache {
     private const val CACHE_SCHEMA_VERSION = 19
     private const val CACHE_DIR_NAME = "book_paragraph_cache"
-    private const val MAX_MEMORY_BOOKS = 4
+    private const val MAX_MEMORY_BOOKS = 6
 
     private val memoryCache = object : LinkedHashMap<String, CachedBookContent>(
         MAX_MEMORY_BOOKS,
@@ -253,6 +253,15 @@ object BookParagraphCache {
         val source = File(sourcePath)
         val sourceMtime = runCatching { source.lastModified() }.getOrDefault(0L)
         return "v${CACHE_SCHEMA_VERSION}_book_${bookId}_${fileSize}_$sourceMtime.json"
+    }
+
+    fun isInMemoryCache(
+        bookId: Long,
+        fileSize: Long,
+        sourcePath: String
+    ): Boolean {
+        val key = buildCacheName(bookId, fileSize, sourcePath)
+        return synchronized(memoryCache) { memoryCache.containsKey(key) }
     }
 
     private fun memoryGet(key: String): CachedBookContent? = synchronized(memoryCache) {

@@ -58,6 +58,7 @@ class LibraryViewModel @Inject constructor(
 @Composable
 fun LibraryScreen(onBookClick: (Long) -> Unit, onImportClick: () -> Unit, viewModel: LibraryViewModel = hiltViewModel()) {
     val books by viewModel.books.collectAsState()
+    val scope = rememberCoroutineScope()
     Scaffold(topBar = { TopAppBar(title = { Text("Library") }) }, floatingActionButton = { FloatingActionButton(onClick = onImportClick) { Icon(Icons.Default.Add, contentDescription = "Import") } }) { padding ->
         if (books.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -70,7 +71,11 @@ fun LibraryScreen(onBookClick: (Long) -> Unit, onImportClick: () -> Unit, viewMo
                         Modifier
                             .fillMaxWidth()
                             .aspectRatio(0.65f)
-                            .clickable { onBookClick(book.id) }
+                            .clickable {
+                                // Prewarm book content cache in parallel with navigation for instant open
+                                scope.launch { viewModel.prepareBookForOpen(book.id) }
+                                onBookClick(book.id)
+                            }
                     ) {
                         Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {

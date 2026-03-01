@@ -1,6 +1,5 @@
 package com.readassistant.feature.settings.presentation
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,6 +46,15 @@ class LlmConfigViewModel @Inject constructor(
         }
     }
 
+    fun updateProvider(entity: LlmProviderEntity) {
+        viewModelScope.launch {
+            if (entity.isDefault) {
+                llmProviderDao.clearAllDefaults()
+            }
+            llmProviderDao.update(entity)
+        }
+    }
+
     fun deleteProvider(entity: LlmProviderEntity) {
         viewModelScope.launch { llmProviderDao.delete(entity) }
     }
@@ -81,7 +89,7 @@ fun LlmConfigScreen(
 ) {
     val providers by viewModel.providers.collectAsState()
     val testResult by viewModel.testResult.collectAsState()
-    var showAddDialog by remember { mutableStateOf(false) }
+    var editingProvider by remember { mutableStateOf<LlmProviderEntity?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(testResult) {
@@ -100,7 +108,11 @@ fun LlmConfigScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
+            FloatingActionButton(
+                onClick = {
+                    editingProvider = LlmProviderEntity(providerType = ProviderType.OPENAI.name)
+                }
+            ) {
                 Icon(Icons.Default.Add, contentDescription = "Add Provider")
             }
         },
@@ -131,6 +143,7 @@ fun LlmConfigScreen(
                         provider = provider,
                         onSetDefault = { viewModel.setDefault(provider.id) },
                         onTest = { viewModel.testConnection(provider) },
+                        onEdit = { editingProvider = provider },
                         onDelete = { viewModel.deleteProvider(provider) }
                     )
                 }
@@ -138,12 +151,17 @@ fun LlmConfigScreen(
         }
     }
 
-    if (showAddDialog) {
-        AddProviderDialog(
-            onDismiss = { showAddDialog = false },
-            onAdd = { entity ->
-                viewModel.addProvider(entity)
-                showAddDialog = false
+    editingProvider?.let { provider ->
+        ProviderDialog(
+            initialProvider = provider,
+            onDismiss = { editingProvider = null },
+            onSave = { entity ->
+                if (entity.id == 0L) {
+                    viewModel.addProvider(entity)
+                } else {
+                    viewModel.updateProvider(entity)
+                }
+                editingProvider = null
             }
         )
     }
@@ -154,6 +172,7 @@ private fun ProviderItem(
     provider: LlmProviderEntity,
     onSetDefault: () -> Unit,
     onTest: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     ListItem(
@@ -181,6 +200,9 @@ private fun ProviderItem(
                 IconButton(onClick = onTest) {
                     Icon(Icons.Default.NetworkCheck, contentDescription = "Test")
                 }
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit")
+                }
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete")
                 }
@@ -191,22 +213,26 @@ private fun ProviderItem(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AddProviderDialog(
+private fun ProviderDialog(
+    initialProvider: LlmProviderEntity,
     onDismiss: () -> Unit,
-    onAdd: (LlmProviderEntity) -> Unit
+    onSave: (LlmProviderEntity) -> Unit
 ) {
-    var providerType by remember { mutableStateOf(ProviderType.OPENAI) }
-    var name by remember { mutableStateOf("") }
-    var apiKey by remember { mutableStateOf("") }
-    var baseUrl by remember { mutableStateOf("") }
-    var modelName by remember { mutableStateOf("") }
-    var isDefault by remember { mutableStateOf(false) }
+    val isEditMode = initialProvider.id != 0L
+    val initialProviderType = remember(initialProvider.providerType) {
+        ProviderType.entries.find { it.name == initialProvider.providerType } ?: ProviderType.OPENAI
+    }
+    var providerType by remember(initialProvider.id) { mutableStateOf(initialProviderType) }
+    var apiKey by remember(initialProvider.id) { mutableStateOf(initialProvider.apiKey) }
+    var baseUrl by remember(initialProvider.id) { mutableStateOf(initialProvider.baseUrl) }
+    var modelName by remember(initialProvider.id) { mutableStateOf(initialProvider.modelName) }
+    var isDefault by remember(initialProvider.id) { mutableStateOf(initialProvider.isDefault) }
     var showApiKey by remember { mutableStateOf(false) }
     var typeExpanded by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add LLM Provider") },
+        title = { Text(if (isEditMode) "Edit LLM Provider" else "Add LLM Provider") },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -239,14 +265,6 @@ private fun AddProviderDialog(
                         }
                     }
                 }
-
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Name (optional)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
 
                 OutlinedTextField(
                     value = apiKey,
@@ -291,17 +309,19 @@ private fun AddProviderDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    onAdd(LlmProviderEntity(
+                    onSave(LlmProviderEntity(
+                        id = initialProvider.id,
                         providerType = providerType.name,
                         apiKey = apiKey,
                         baseUrl = baseUrl,
                         modelName = modelName,
-                        isDefault = isDefault
+                        isDefault = isDefault,
+                        createdAt = initialProvider.createdAt
                     ))
                 },
                 enabled = apiKey.isNotBlank()
             ) {
-                Text("Add")
+                Text(if (isEditMode) "Save" else "Add")
             }
         },
         dismissButton = {

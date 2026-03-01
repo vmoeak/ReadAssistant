@@ -27,6 +27,9 @@ interface ArticleDao {
     @Query("UPDATE articles SET isRead = :isRead WHERE id = :id")
     suspend fun updateReadStatus(id: Long, isRead: Boolean)
 
+    @Query("UPDATE articles SET isRead = 1 WHERE feedId = :feedId AND isRead = 0")
+    suspend fun markAllReadByFeed(feedId: Long): Int
+
     @Query("UPDATE articles SET isStarred = :isStarred WHERE id = :id")
     suspend fun updateStarredStatus(id: Long, isStarred: Boolean)
 

@@ -55,6 +55,10 @@ class RssRepositoryImpl @Inject constructor(
             feedDao.updateUnreadCount(article.feedId, unreadCount)
         }
     }
+    suspend fun markAllArticlesRead(feedId: Long) {
+        val changed = articleDao.markAllReadByFeed(feedId)
+        if (changed > 0) feedDao.updateUnreadCount(feedId, 0)
+    }
     suspend fun toggleArticleStar(articleId: Long) { articleDao.getArticleById(articleId)?.let { articleDao.updateStarredStatus(articleId, !it.isStarred) } }
     suspend fun getArticleById(articleId: Long): FeedArticle? = articleDao.getArticleById(articleId)?.toDomain()
 }

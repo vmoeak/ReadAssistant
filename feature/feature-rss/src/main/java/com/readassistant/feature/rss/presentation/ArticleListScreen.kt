@@ -6,6 +6,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.*
@@ -33,6 +35,7 @@ class ArticleListViewModel @Inject constructor(savedStateHandle: SavedStateHandl
     val articles: StateFlow<List<FeedArticle>> = repository.getArticlesByFeed(feedId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     fun toggleStar(id: Long) { viewModelScope.launch { repository.toggleArticleStar(id) } }
     fun markRead(id: Long) { viewModelScope.launch { repository.markArticleRead(id) } }
+    fun markAllRead() { viewModelScope.launch { repository.markAllArticlesRead(feedId) } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,8 +43,35 @@ class ArticleListViewModel @Inject constructor(savedStateHandle: SavedStateHandl
 fun ArticleListScreen(onArticleClick: (Long) -> Unit, onBack: () -> Unit, viewModel: ArticleListViewModel = hiltViewModel()) {
     val articles by viewModel.articles.collectAsState()
     val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
+    var showBatchMenu by remember { mutableStateOf(false) }
+    val hasUnread = articles.any { !it.isRead }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Articles") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Articles") },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showBatchMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(expanded = showBatchMenu, onDismissRequest = { showBatchMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Mark all as read") },
+                                leadingIcon = { Icon(Icons.Default.DoneAll, contentDescription = null) },
+                                enabled = hasUnread,
+                                onClick = {
+                                    viewModel.markAllRead()
+                                    showBatchMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    ) { padding ->
         LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
             items(articles, key = { it.id }) { article ->
                 ListItem(

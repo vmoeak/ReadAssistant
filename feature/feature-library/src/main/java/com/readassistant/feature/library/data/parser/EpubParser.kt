@@ -12,18 +12,68 @@ import java.util.zip.ZipFile
 
 class EpubParser : BookParser {
     override suspend fun parseMetadata(filePath: String): BookMetadata = try {
-        val zip = ZipFile(filePath)
-        val entryLookup = buildZipEntryLookup(zip)
-        var title = filePath.substringAfterLast("/").substringBeforeLast(".")
-        var author = ""
-        val opfEntry = zip.entries().asSequence().firstOrNull { it.name.endsWith(".opf", ignoreCase = true) }
-            ?: resolveZipEntry(entryLookup, zip, "content.opf")
-        if (opfEntry != null) {
-            val c = zip.getInputStream(opfEntry).bufferedReader().readText()
-            Regex("<dc:title[^>]*>([^<]+)</dc:title>").find(c)?.let { title = it.groupValues[1] }
-            Regex("<dc:creator[^>]*>([^<]+)</dc:creator>").find(c)?.let { author = it.groupValues[1] }
+        ZipFile(filePath).use { zip ->
+            val entryLookup = buildZipEntryLookup(zip)
+            var title = filePath.substringAfterLast("/").substringBeforeLast(".")
+            var author = ""
+            var coverPath: String? = null
+            val opfEntry = zip.entries().asSequence().firstOrNull { it.name.endsWith(".opf", ignoreCase = true) }
+                ?: resolveZipEntry(entryLookup, zip, "content.opf")
+            if (opfEntry != null) {
+                val opfText = zip.getInputStream(opfEntry).bufferedReader().use { it.readText() }
+                Regex("<dc:title[^>]*>([^<]+)</dc:title>").find(opfText)?.let { title = it.groupValues[1] }
+                Regex("<dc:creator[^>]*>([^<]+)</dc:creator>").find(opfText)?.let { author = it.groupValues[1] }
+
+                val manifest = parseManifest(opfText)
+                val opfBase = opfEntry.name.substringBeforeLast("/", missingDelimiterValue = "")
+                val coverHref = extractCoverHref(opfText, manifest)
+                if (!coverHref.isNullOrBlank()) {
+                    coverPath = resolveImageSource(
+                        zip = zip,
+                        entryLookup = entryLookup,
+                        baseDir = opfBase,
+                        rawRef = coverHref,
+                        epubFilePath = filePath,
+                        outputDir = null
+                    )
+                }
+
+                if (coverPath.isNullOrBlank()) {
+                    val firstSpinePath = parseSpineRefs(opfText)
+                        .asSequence()
+                        .mapNotNull { idref ->
+                            val href = manifest[idref] ?: return@mapNotNull null
+                            val resolved = resolveZipPath(opfBase, href)
+                            resolveZipEntryName(entryLookup, resolved)
+                                ?: resolveZipEntryName(entryLookup, href)
+                        }
+                        .firstOrNull()
+                    if (!firstSpinePath.isNullOrBlank()) {
+                        val firstDocEntry = resolveZipEntry(entryLookup, zip, firstSpinePath)
+                        if (firstDocEntry != null) {
+                            val raw = zip.getInputStream(firstDocEntry).bufferedReader().use { it.readText() }
+                            val doc = Jsoup.parse(raw)
+                            val firstImageRef = doc.select("img, image")
+                                .asSequence()
+                                .map { extractImageRef(it) }
+                                .firstOrNull { it.isNotBlank() }
+                            if (!firstImageRef.isNullOrBlank()) {
+                                val baseDir = firstDocEntry.name.substringBeforeLast("/", missingDelimiterValue = "")
+                                coverPath = resolveImageSource(
+                                    zip = zip,
+                                    entryLookup = entryLookup,
+                                    baseDir = baseDir,
+                                    rawRef = firstImageRef,
+                                    epubFilePath = filePath,
+                                    outputDir = null
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            BookMetadata(title = title, author = author, coverPath = coverPath)
         }
-        zip.close(); BookMetadata(title = title, author = author)
     } catch (_: Throwable) { BookMetadata(title = filePath.substringAfterLast("/").substringBeforeLast(".")) }
 
     override suspend fun extractContent(filePath: String, chapterIndex: Int, outputDir: String?): String {
@@ -269,6 +319,41 @@ class EpubParser : BookParser {
                     ?.ifBlank { null }
             }
             .toList()
+    }
+
+    private fun extractCoverHref(opfText: String, manifest: Map<String, String>): String? {
+        val doc = Jsoup.parse(opfText, "", Parser.xmlParser())
+        val byProperty = doc.select("manifest > item[properties~=cover-image]")
+            .firstOrNull()
+            ?.attr("href")
+            ?.trim()
+            ?.ifBlank { null }
+        if (byProperty != null) return byProperty
+
+        val coverId = doc.select("metadata > meta[name=cover]")
+            .firstOrNull()
+            ?.attr("content")
+            ?.trim()
+            ?.ifBlank { null }
+            ?: Regex("""<meta\b[^>]*name\s*=\s*["']cover["'][^>]*content\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .find(opfText)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.ifBlank { null }
+        if (coverId != null) {
+            val href = manifest[coverId]?.trim()
+            if (!href.isNullOrBlank()) return href
+        }
+
+        return manifest.entries
+            .firstOrNull { (id, href) ->
+                id.contains("cover", ignoreCase = true) ||
+                    href.contains("cover", ignoreCase = true)
+            }
+            ?.value
+            ?.trim()
+            ?.ifBlank { null }
     }
 
     private fun extractImageRef(element: Element): String {

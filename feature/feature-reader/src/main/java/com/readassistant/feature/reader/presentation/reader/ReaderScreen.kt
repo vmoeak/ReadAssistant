@@ -170,6 +170,7 @@ fun ReaderScreen(
                     }
                 }
                 isBook -> NativeBookReader(
+                    bookId = uiState.contentId,
                     paragraphs = uiState.bookParagraphs,
                     themeType = rtt,
                     fontSize = fontSize,

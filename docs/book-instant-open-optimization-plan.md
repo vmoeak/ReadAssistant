@@ -13,10 +13,12 @@
 | 2.2 流式分页 | ✅ 完成 | 大书优先显示前几页，后台继续分页 |
 | 3.1 ActiveBookState 单例 | ✅ 完成 | `@Singleton` 持有当前书籍状态，跨 ViewModel 生命周期 |
 | 3.2 修复 prewarm 竞争 | ✅ 完成 | prewarm → ActiveBookState → ViewModel 无竞争 |
-| 3.3 分页结果缓存 | ⏸ 推迟 | 需暴露 NativeBookReader 私有类型 |
+| 3.3 分页结果缓存 | ✅ 完成 | `PageCache` 单例缓存 entries/pages/anchorMap，二次打开零计算 |
 | 4.1 延迟图片提取 | ✅ 完成 | 跳过已存在磁盘的图片，避免重复读取 zip |
 | 4.2 增量 spine 解析 | ⏸ 推迟 | EPUB 解析只首次运行，后续走缓存 |
 | 5.1 初始页码无动画跳转 | ✅ 完成 | 首次 seek 用 `scrollToPage`（无动画），后续用 `animateScrollToPage` |
+| 5.2 Pager 正确初始页 | ✅ 完成 | `rememberPagerState(initialPage = startPage)` + `alpha(0f)` 防止闪白 |
+| 5.3 导航动画移除 | ✅ 完成 | Reader 路由 `EnterTransition.None` / `ExitTransition.None`，消除 ~300ms 过渡 |
 
 ---
 

@@ -4,6 +4,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
@@ -77,13 +79,17 @@ fun NavGraph(navController: NavHostController, modifier: Modifier = Modifier) {
             )
         }
 
-        // Reader
+        // Reader — no transition animation for instant open
         composable(
             route = Screen.Reader.route,
             arguments = listOf(
                 navArgument("contentType") { type = NavType.StringType },
                 navArgument("contentId") { type = NavType.StringType }
-            )
+            ),
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None }
         ) {
             ReaderScreen(
                 onBack = { navController.popBackStack() }

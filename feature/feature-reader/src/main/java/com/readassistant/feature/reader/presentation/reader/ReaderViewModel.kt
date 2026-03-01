@@ -27,13 +27,55 @@ class ReaderViewModel @Inject constructor(
     private val highlightDao: HighlightDao, private val noteDao: NoteDao, private val feedDao: FeedDao,
     private val userPreferences: UserPreferences,
     private val bookReadingRepository: BookReadingRepository,
+    private val activeBookState: com.readassistant.feature.library.data.reading.ActiveBookState,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
     private val bookPagePrefs by lazy { appContext.getSharedPreferences("reader_book_page_state", Context.MODE_PRIVATE) }
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
     private val contentIdLong: Long = (savedStateHandle.get<String>("contentId") ?: "0").toLongOrNull() ?: 0L
-    private val _uiState = MutableStateFlow(
+
+    // Synchronous fast path: if ActiveBookState already has this book, build initial state
+    // with paragraphs populated so the FIRST composition frame has content (no blank flash).
+    private val instantBookState: ReaderUiState? = if (
+        contentTypeStr == "BOOK" && contentIdLong > 0 && activeBookState.isLoaded(contentIdLong)
+    ) {
+        val content = activeBookState.content!!
+        val readerParagraphs = content.paragraphs.mapIndexed { index, paragraph ->
+            ReaderParagraph(
+                index = index,
+                text = paragraph.text,
+                isHeading = paragraph.isHeading,
+                html = paragraph.html,
+                imageSrc = paragraph.imageSrc,
+                plainText = paragraph.plainText,
+                linkSpans = paragraph.linkSpans,
+                anchorIds = paragraph.anchorIds
+            )
+        }
+        val readerChapters = content.chapters.map {
+            ReaderChapter(title = it.title, pageIndex = it.paragraphIndex)
+        }
+        // Read saved page index synchronously (small SP file, likely already loaded)
+        val savedPageIndex = bookPagePrefs.getInt("book_page_$contentIdLong", -1).takeIf { it >= 0 }
+        val formatName = activeBookState.formatName
+        val contentType = try { ContentType.valueOf(formatName) } catch (_: Exception) { ContentType.EPUB }
         ReaderUiState(
+            isLoading = false,
+            title = activeBookState.title,
+            htmlContent = "",
+            bookParagraphs = readerParagraphs,
+            contentType = contentType,
+            contentId = contentIdLong,
+            currentChapterIndex = savedPageIndex?.coerceAtLeast(0) ?: 0,
+            totalChapters = 0, // will be set by onBookPageChanged when pagination completes
+            chapters = readerChapters,
+            progressPercent = 0f,
+            savedBookPageIndex = savedPageIndex
+        )
+    } else null
+
+    private val _uiState = MutableStateFlow(
+        instantBookState ?: ReaderUiState(
             isLoading = contentTypeStr != "BOOK",
             contentType = when (contentTypeStr) {
                 "WEB_ARTICLE" -> ContentType.WEB_ARTICLE
@@ -49,8 +91,21 @@ class ReaderViewModel @Inject constructor(
     private var pendingInitialBookPageIndex: Int? = null
 
     init {
-        // Fast path for books: try memory cache first for instant open ("秒开")
-        if (contentTypeStr == "BOOK" && contentIdLong > 0) {
+        if (instantBookState != null) {
+            // Already populated synchronously — set pending guards and load progress async
+            pendingInitialBookPageIndex = instantBookState.savedBookPageIndex?.coerceAtLeast(0)
+            pendingInitialBookProgress = 0f
+            android.util.Log.w("ReadAssistant", "Book $contentIdLong opened instantly (synchronous)")
+            // Load accurate progress in background (for progress bar display)
+            viewModelScope.launch {
+                val contentType = instantBookState.contentType.name
+                val savedProgress = readSavedProgress(contentType, contentIdLong)
+                if (savedProgress > 0.001f) {
+                    _uiState.update { it.copy(progressPercent = savedProgress) }
+                }
+            }
+        } else if (contentTypeStr == "BOOK" && contentIdLong > 0) {
+            // Async path: ActiveBookState miss — try memory LRU cache, then disk
             viewModelScope.launch {
                 val cached = bookReadingRepository.tryLoadFromMemoryCache(contentIdLong)
                 if (cached != null && _uiState.value.bookParagraphs.isEmpty()) {
@@ -65,9 +120,8 @@ class ReaderViewModel @Inject constructor(
                         initialProgress = savedProgress,
                         initialPageIndex = savedPageIndex
                     )
-                    android.util.Log.w("ReadAssistant", "Book $contentIdLong opened instantly from memory cache")
+                    android.util.Log.w("ReadAssistant", "Book $contentIdLong opened from memory LRU cache")
                 } else {
-                    // Memory cache miss — fall back to normal loading
                     loadContent()
                 }
             }
@@ -188,8 +242,8 @@ class ReaderViewModel @Inject constructor(
                 bookParagraphs = readerParagraphs,
                 contentType = try { ContentType.valueOf(formatName) } catch (_: Exception) { ContentType.EPUB },
                 contentId = contentId,
-                currentChapterIndex = 0,
-                totalChapters = readerParagraphs.size.coerceAtLeast(1),
+                currentChapterIndex = initialPageIndex?.coerceAtLeast(0) ?: 0,
+                totalChapters = 0, // will be set by onBookPageChanged when pagination completes
                 chapters = readerChapters,
                 progressPercent = initialProgress.coerceIn(0f, 1f),
                 savedBookPageIndex = initialPageIndex?.coerceAtLeast(0)

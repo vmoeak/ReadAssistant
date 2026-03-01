@@ -85,9 +85,59 @@ import java.net.URLDecoder
 import java.util.Base64
 import kotlin.math.roundToInt
 
+/**
+ * In-memory pagination cache — survives recomposition and navigation.
+ * Similar to legado's ReadBook object: keeps the last pagination result so
+ * re-opening the same book with the same layout settings is instant (zero computation).
+ * Cache key: bookId + paragraph count + layout parameters.
+ */
+private object PageCache {
+    @Volatile var key: Long = 0L
+    @Volatile var entries: List<NormalizedEntry> = emptyList()
+    @Volatile var pages: List<ReaderPage> = emptyList()
+    @Volatile var anchorMap: Map<String, Int> = emptyMap()
+
+    fun computeKey(
+        bookId: Long,
+        paragraphCount: Int,
+        contentWidthPx: Float,
+        contentHeightPx: Float,
+        fontSize: Float,
+        lineHeight: Float
+    ): Long {
+        var h = bookId
+        h = h * 31 + paragraphCount.toLong()
+        h = h * 31 + contentWidthPx.toBits().toLong()
+        h = h * 31 + contentHeightPx.toBits().toLong()
+        h = h * 31 + fontSize.toBits().toLong()
+        h = h * 31 + lineHeight.toBits().toLong()
+        return h
+    }
+
+    fun get(k: Long): Triple<List<NormalizedEntry>, List<ReaderPage>, Map<String, Int>>? {
+        if (key == k && pages.isNotEmpty()) {
+            return Triple(entries, pages, anchorMap)
+        }
+        return null
+    }
+
+    fun put(
+        k: Long,
+        e: List<NormalizedEntry>,
+        p: List<ReaderPage>,
+        a: Map<String, Int>
+    ) {
+        entries = e
+        pages = p
+        anchorMap = a
+        key = k
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NativeBookReader(
+    bookId: Long = 0L,
     paragraphs: List<ReaderParagraph>,
     themeType: ReadingThemeType,
     fontSize: Float,
@@ -152,16 +202,24 @@ fun NativeBookReader(
         val maxImageHeightPx = (contentHeightPx * 0.72f).coerceAtLeast(with(density) { 200.dp.toPx() })
         val maxImageHeightDp = with(density) { maxImageHeightPx.toDp() }
 
-        // Synchronous: fast with pre-computed plainText/linkSpans/anchorIds (no Jsoup)
-        val entries = remember(paragraphs) { normalizeEntries(paragraphs) }
-        val anchorMap = remember(paragraphs) { buildAnchorMap(paragraphs) }
+        val fontSizePx = with(density) { fontSize.sp.toPx() }
         val linkColor = Color(0xFF5B8DEF)
+
+        // --- Pagination cache: instant hit when reopening with same layout ---
+        val cacheKey = remember(bookId, paragraphs.size, contentWidthPx, contentHeightPx, fontSize, lineHeight) {
+            PageCache.computeKey(bookId, paragraphs.size, contentWidthPx, contentHeightPx, fontSize, lineHeight)
+        }
+        val cached = remember(cacheKey) { PageCache.get(cacheKey) }
+
+        // Entries & anchor map: use cache or compute synchronously (fast, no Jsoup)
+        val entries = cached?.first ?: remember(paragraphs) { normalizeEntries(paragraphs) }
+        val anchorMap = cached?.third ?: remember(paragraphs) { buildAnchorMap(paragraphs) }
+
         // Full text map: paragraphIndex → complete original text (before any splitting)
         val fullTextMap = remember(entries) {
             entries.filter { it.isParagraphStart && it.imageSrc.isNullOrBlank() && it.text.isNotBlank() }
                 .associate { it.paragraphIndex to it.text }
         }
-        val fontSizePx = with(density) { fontSize.sp.toPx() }
 
         // Only completed translations participate in pagination (not streaming ones)
         val completedTranslationKeys = remember(translations) {
@@ -182,12 +240,19 @@ fun NativeBookReader(
             }
         }
 
+        // Pages: use cache for instant display, or compute asynchronously
+        val cachedPages = cached?.second ?: emptyList()
         val pagesState = produceState(
-            initialValue = emptyList<ReaderPage>(),
+            initialValue = cachedPages,
             paginationEntries, contentWidthPx, contentHeightPx, fontSize, lineHeight
         ) {
             if (paginationEntries.isEmpty()) {
                 value = emptyList()
+                return@produceState
+            }
+            // If cache hit and bilingual mode didn't change entries, skip recomputation
+            if (cachedPages.isNotEmpty() && paginationEntries === entries) {
+                value = cachedPages
                 return@produceState
             }
             // For large books: emit first pages early for instant display.
@@ -214,7 +279,7 @@ fun NativeBookReader(
                 }
             }
             // Complete pagination with all entries
-            value = withContext(Dispatchers.Default) {
+            val fullPages = withContext(Dispatchers.Default) {
                 paginateEntries(
                     entries = paginationEntries,
                     contentWidthPx = contentWidthPx,
@@ -225,6 +290,11 @@ fun NativeBookReader(
                     paragraphGapPx = paragraphGapPx,
                     density = density.density
                 )
+            }
+            value = fullPages
+            // Store in cache for instant re-open
+            if (paginationEntries === entries && fullPages.isNotEmpty()) {
+                PageCache.put(cacheKey, entries, fullPages, anchorMap)
             }
         }
         val pages = pagesState.value

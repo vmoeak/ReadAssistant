@@ -27,7 +27,6 @@ class EpubParser : BookParser {
     } catch (_: Throwable) { BookMetadata(title = filePath.substringAfterLast("/").substringBeforeLast(".")) }
 
     override suspend fun extractContent(filePath: String, chapterIndex: Int, outputDir: String?): String {
-        android.util.Log.d("EpubParser", "extractContent: $filePath, outputDir=$outputDir")
         return try {
             val zip = ZipFile(filePath)
             val entryLookup = buildZipEntryLookup(zip)
@@ -307,7 +306,6 @@ class EpubParser : BookParser {
     ): String? {
         val src = rawRef.trim().removePrefix("./")
         if (src.isBlank()) return null
-        android.util.Log.d("EpubParser", "Resolving image: src=$src, baseDir=$baseDir")
         if (src.startsWith("data:", ignoreCase = true)) return src
         if (src.startsWith("http://", ignoreCase = true) || src.startsWith("https://", ignoreCase = true)) {
             return src
@@ -315,19 +313,34 @@ class EpubParser : BookParser {
 
         val fileName = src.substringAfterLast('/')
         val resolved = resolveZipPath(baseDir, src)
-        android.util.Log.d("EpubParser", "Resolved path: $resolved")
-        
+
         val imageEntry = resolveZipEntry(entryLookup, zip, resolved)
             ?: resolveZipEntry(entryLookup, zip, src)
             ?: zip.entries().asSequence().find { it.name.endsWith("/$fileName", ignoreCase = true) || it.name.equals(fileName, ignoreCase = true) }
             ?: zip.entries().asSequence().find { it.name.contains(fileName, ignoreCase = true) && !it.isDirectory }
-            
-        if (imageEntry == null) {
-            android.util.Log.w("EpubParser", "Image entry not found: $src (resolved: $resolved)")
-            return null
+
+        if (imageEntry == null) return null
+
+        // Fast path: check if image was already extracted to disk (avoids re-reading zip bytes)
+        val uncompressedSize = imageEntry.size
+        if (uncompressedSize > 0) {
+            val extension = imageEntry.name.substringAfterLast('.', missingDelimiterValue = "").lowercase().trim()
+            val digest = sha1("${imageEntry.name}:$uncompressedSize")
+            val finalName = if (extension.isNotBlank()) "$digest.$extension" else digest
+            val dir = if (outputDir != null) {
+                File(outputDir, ".epub_images")
+            } else {
+                File(epubFilePath).parentFile?.let { File(it, ".epub_images") }
+            }
+            if (dir != null) {
+                val existing = File(dir, finalName)
+                if (existing.exists() && existing.length() == uncompressedSize) {
+                    return existing.absolutePath
+                }
+            }
         }
-        
-        android.util.Log.d("EpubParser", "Found entry: ${imageEntry.name}")
+
+        // Slow path: read bytes from zip and write to disk
         val bytes = runCatching { zip.getInputStream(imageEntry).use { it.readBytes() } }.getOrNull()
             ?: return null
 

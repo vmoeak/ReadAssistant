@@ -11,7 +11,7 @@ import java.io.File
 import java.util.LinkedHashMap
 
 object BookParagraphCache {
-    private const val CACHE_SCHEMA_VERSION = 19
+    private const val CACHE_SCHEMA_VERSION = 20
     private const val CACHE_DIR_NAME = "book_paragraph_cache"
     private const val MAX_MEMORY_BOOKS = 6
 
@@ -25,11 +25,20 @@ object BookParagraphCache {
         }
     }
 
+    data class CachedLinkSpan(
+        val start: Int,
+        val end: Int,
+        val href: String
+    )
+
     data class CachedParagraph(
         val text: String,
         val isHeading: Boolean,
         val html: String = "",
-        val imageSrc: String? = null
+        val imageSrc: String? = null,
+        val plainText: String = "",
+        val linkSpans: List<CachedLinkSpan> = emptyList(),
+        val anchorIds: List<String> = emptyList()
     )
 
     data class CachedChapter(
@@ -123,11 +132,15 @@ object BookParagraphCache {
                     .replace(Regex("\\s+"), " ")
                     .trim()
                 val anchorHtml = buildAnchorMarkerHtml(element = element, body = body)
+                val imgAnchorIds = collectAllAnchorIds(element, body)
                 paragraphs += CachedParagraph(
                     text = alt,
                     isHeading = false,
                     html = anchorHtml,
-                    imageSrc = src
+                    imageSrc = src,
+                    plainText = alt,
+                    linkSpans = emptyList(),
+                    anchorIds = imgAnchorIds
                 )
                 return@forEach
             }
@@ -146,10 +159,15 @@ object BookParagraphCache {
             if (text.isBlank() && isNonVisualHtmlBlock(htmlWithAnchors)) return@forEach
             val isHeading = tag.startsWith("h")
             val idx = paragraphs.size
+            val (extractedText, extractedLinks) = extractPlainTextAndLinks(element)
+            val elementAnchorIds = collectAllAnchorIds(element, body)
             paragraphs += CachedParagraph(
                 text = text,
                 isHeading = isHeading,
-                html = htmlWithAnchors
+                html = htmlWithAnchors,
+                plainText = extractedText,
+                linkSpans = extractedLinks,
+                anchorIds = elementAnchorIds
             )
             if (isHeading && text.isNotBlank()) {
                 chapters += CachedChapter(
@@ -167,7 +185,10 @@ object BookParagraphCache {
                 paragraphs += CachedParagraph(
                     text = fallback,
                     isHeading = false,
-                    html = body.html()
+                    html = body.html(),
+                    plainText = fallback,
+                    linkSpans = emptyList(),
+                    anchorIds = emptyList()
                 )
             }
         }
@@ -189,7 +210,25 @@ object BookParagraphCache {
             writer.append(JSONObject.quote(paragraph.html))
             writer.append(",\"imageSrc\":")
             writer.append(paragraph.imageSrc?.let(JSONObject::quote) ?: "null")
-            writer.append('}')
+            writer.append(",\"plainText\":")
+            writer.append(JSONObject.quote(paragraph.plainText))
+            writer.append(",\"linkSpans\":[")
+            paragraph.linkSpans.forEachIndexed { li, link ->
+                if (li > 0) writer.append(',')
+                writer.append("{\"s\":")
+                writer.append(link.start.toString())
+                writer.append(",\"e\":")
+                writer.append(link.end.toString())
+                writer.append(",\"h\":")
+                writer.append(JSONObject.quote(link.href))
+                writer.append('}')
+            }
+            writer.append("],\"anchorIds\":[")
+            paragraph.anchorIds.forEachIndexed { ai, id ->
+                if (ai > 0) writer.append(',')
+                writer.append(JSONObject.quote(id))
+            }
+            writer.append("]}")
         }
         writer.append("],\"chapters\":[")
         content.chapters.forEachIndexed { index, chapter ->
@@ -217,11 +256,32 @@ object BookParagraphCache {
                 val imageSrc = if (obj.isNull("imageSrc")) null
                     else obj.optString("imageSrc").trim().ifBlank { null }
                 if (text.isBlank() && html.isBlank() && imageSrc.isNullOrBlank()) continue
+                val plainText = obj.optString("plainText", "").trim()
+                val linkSpansJson = obj.optJSONArray("linkSpans")
+                val linkSpans = if (linkSpansJson != null) {
+                    (0 until linkSpansJson.length()).mapNotNull { li ->
+                        val lo = linkSpansJson.optJSONObject(li) ?: return@mapNotNull null
+                        CachedLinkSpan(
+                            start = lo.optInt("s", 0),
+                            end = lo.optInt("e", 0),
+                            href = lo.optString("h", "")
+                        )
+                    }.filter { it.start < it.end && it.href.isNotBlank() }
+                } else emptyList()
+                val anchorIdsJson = obj.optJSONArray("anchorIds")
+                val anchorIds = if (anchorIdsJson != null) {
+                    (0 until anchorIdsJson.length()).mapNotNull { ai ->
+                        anchorIdsJson.optString(ai)?.trim()?.ifBlank { null }
+                    }
+                } else emptyList()
                 paragraphs += CachedParagraph(
                     text = text,
                     isHeading = obj.optBoolean("isHeading", false),
                     html = html,
-                    imageSrc = imageSrc
+                    imageSrc = imageSrc,
+                    plainText = plainText,
+                    linkSpans = linkSpans,
+                    anchorIds = anchorIds
                 )
             }
 
@@ -343,6 +403,100 @@ object BookParagraphCache {
             .trim()
             .substringBefore(' ')
             .trim()
+    }
+
+    private fun extractPlainTextAndLinks(element: Element): Pair<String, List<CachedLinkSpan>> {
+        val sb = StringBuilder()
+        val links = mutableListOf<CachedLinkSpan>()
+        walkElementForText(element, sb, links, null)
+        val raw = sb.toString()
+        val plainText = raw.replace(Regex("\\s+"), " ").trim()
+        return plainText to remapCachedLinks(raw, plainText, links)
+    }
+
+    private fun walkElementForText(
+        node: org.jsoup.nodes.Node,
+        sb: StringBuilder,
+        links: MutableList<CachedLinkSpan>,
+        currentHref: String?
+    ) {
+        when (node) {
+            is org.jsoup.nodes.TextNode -> {
+                val text = node.wholeText
+                if (text.isNotEmpty()) sb.append(text)
+            }
+            is Element -> {
+                val tag = node.tagName().lowercase()
+                if (tag == "img" || tag == "image") return
+                val isLink = tag == "a" && node.hasAttr("href")
+                val href = if (isLink) {
+                    val h = node.attr("href").trim()
+                    if (h.isNotBlank() && h.startsWith("#")) h else null
+                } else null
+                val linkStart = if (isLink && href != null) sb.length else -1
+                for (child in node.childNodes()) {
+                    walkElementForText(child, sb, links, href ?: currentHref)
+                }
+                if (isLink && href != null && linkStart >= 0 && sb.length > linkStart) {
+                    links += CachedLinkSpan(start = linkStart, end = sb.length, href = href)
+                }
+            }
+        }
+    }
+
+    private fun remapCachedLinks(
+        raw: String,
+        normalized: String,
+        links: List<CachedLinkSpan>
+    ): List<CachedLinkSpan> {
+        if (links.isEmpty()) return emptyList()
+        val rawToNorm = IntArray(raw.length + 1) { -1 }
+        val leadingTrimmed = raw.length - raw.trimStart().length
+        var ri = leadingTrimmed
+        var ni = 0
+        while (ri < raw.length && ni < normalized.length) {
+            if (raw[ri] == normalized[ni]) {
+                rawToNorm[ri] = ni
+                ri++
+                ni++
+            } else if (raw[ri].isWhitespace()) {
+                rawToNorm[ri] = ni
+                ri++
+            } else {
+                ri++
+            }
+        }
+        while (ri <= raw.length) {
+            rawToNorm[ri] = ni.coerceAtMost(normalized.length)
+            ri++
+        }
+        return links.mapNotNull { link ->
+            val newStart = rawToNorm.getOrNull(link.start) ?: return@mapNotNull null
+            val newEnd = rawToNorm.getOrNull(link.end)
+                ?: rawToNorm.getOrNull(link.end.coerceAtMost(raw.length))
+                ?: return@mapNotNull null
+            if (newStart >= newEnd || newStart >= normalized.length) return@mapNotNull null
+            CachedLinkSpan(
+                start = newStart,
+                end = newEnd.coerceAtMost(normalized.length),
+                href = link.href
+            )
+        }
+    }
+
+    private fun collectAllAnchorIds(element: Element, body: Element): List<String> {
+        val ids = mutableListOf<String>()
+        val id = element.id().trim()
+        if (id.isNotBlank()) ids += id
+        val name = element.attr("name").trim()
+        if (name.isNotBlank()) ids += name
+        element.parents().takeWhile { it != body }.forEach { ancestor ->
+            val aId = ancestor.id().trim()
+            if (aId.isNotBlank()) ids += aId
+            val aName = ancestor.attr("name").trim()
+            if (aName.isNotBlank()) ids += aName
+        }
+        return ids
     }
 
     private fun escapeAttribute(value: String): String {

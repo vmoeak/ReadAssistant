@@ -176,6 +176,8 @@ fun ReaderScreen(
                     lineHeight = lineHeight,
                     isBilingualMode = isBilingual,
                     translations = translations,
+                    initialPageIndex = uiState.savedBookPageIndex,
+                    initialProgress = uiState.progressPercent,
                     seekCommandId = seekCommandId,
                     seekParagraphIndex = seekParagraphIndex,
                     seekPageIndex = seekPageIndex,

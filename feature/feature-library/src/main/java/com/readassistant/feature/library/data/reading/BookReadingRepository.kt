@@ -24,11 +24,15 @@ data class LoadedBookContent(
 class BookReadingRepository @Inject constructor(
     private val bookDao: BookDao,
     private val parserFactory: BookParserFactory,
+    private val activeBookState: ActiveBookState,
     @ApplicationContext private val appContext: Context
 ) {
     suspend fun prewarm(bookId: Long) {
         withContext(Dispatchers.IO) {
             runCatching {
+                // Skip prewarm if ActiveBookState already has this book loaded
+                if (activeBookState.isLoaded(bookId)) return@runCatching
+
                 val book = bookDao.getBookById(bookId) ?: return@runCatching
                 val format = runCatching { BookFormat.valueOf(book.format) }.getOrNull() ?: return@runCatching
 
@@ -67,7 +71,9 @@ class BookReadingRepository @Inject constructor(
                     fileSize = book.fileSize,
                     sourcePath = book.filePath
                 )
-                if (paragraphCached == null) {
+                val content = if (paragraphCached != null) {
+                    paragraphCached
+                } else {
                     val html = loadHtmlContent(
                         bookId = book.id,
                         fileSize = book.fileSize,
@@ -86,17 +92,31 @@ class BookReadingRepository @Inject constructor(
                             content = parsed
                         )
                     }
+                    parsed
+                }
+
+                // Store in ActiveBookState for race-free instant open
+                if (content.paragraphs.isNotEmpty()) {
+                    activeBookState.set(
+                        id = book.id,
+                        title = book.title,
+                        formatName = book.format,
+                        content = content
+                    )
                 }
             }
         }
     }
 
     /**
-     * Attempt to load book content from memory cache only (no disk or parse fallback).
-     * Returns non-null when the memory LRU cache is already warmed for this book,
-     * enabling instant ("秒开") reader open.
+     * Attempt to load book content instantly without disk I/O.
+     * Checks ActiveBookState first (race-free), then memory LRU cache.
      */
     suspend fun tryLoadFromMemoryCache(bookId: Long): LoadedBookContent? {
+        // Fast path: ActiveBookState (set by prewarm or previous open)
+        if (activeBookState.isLoaded(bookId)) {
+            return activeBookState.toLoadedBookContent()
+        }
         return withContext(Dispatchers.IO) {
             runCatching {
                 val book = bookDao.getBookById(bookId) ?: return@runCatching null
@@ -105,6 +125,13 @@ class BookReadingRepository @Inject constructor(
                     fileSize = book.fileSize,
                     sourcePath = book.filePath
                 ) ?: return@runCatching null
+                // Also populate ActiveBookState for subsequent opens
+                activeBookState.set(
+                    id = book.id,
+                    title = book.title,
+                    formatName = book.format,
+                    content = cached
+                )
                 LoadedBookContent(
                     id = book.id,
                     title = book.title,
@@ -116,6 +143,10 @@ class BookReadingRepository @Inject constructor(
     }
 
     suspend fun loadBookForReading(bookId: Long): LoadedBookContent? {
+        // Check ActiveBookState first for instant load
+        if (activeBookState.isLoaded(bookId)) {
+            return activeBookState.toLoadedBookContent()
+        }
         return withContext(Dispatchers.IO) {
             runCatching {
                 val book = bookDao.getBookById(bookId) ?: return@runCatching null
@@ -142,11 +173,20 @@ class BookReadingRepository @Inject constructor(
                             fileSize = book.fileSize,
                             sourcePath = book.filePath
                         ) {
-                            android.util.Log.d("BookReadingRepository", "Calling parser for book ${book.id}")
                             parserFactory.getParser(format).extractContent(book.filePath, outputDir = appContext.cacheDir.absolutePath)
                         } ?: return@loadParagraphContent null
                         runCatching { BookParagraphCache.buildFromHtml(html) }.getOrNull()
                     } ?: return@runCatching null
+                }
+
+                // Populate ActiveBookState for subsequent opens
+                if (structured.paragraphs.isNotEmpty()) {
+                    activeBookState.set(
+                        id = book.id,
+                        title = book.title,
+                        formatName = book.format,
+                        content = structured
+                    )
                 }
 
                 LoadedBookContent(

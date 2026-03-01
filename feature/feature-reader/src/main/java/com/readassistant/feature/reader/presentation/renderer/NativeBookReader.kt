@@ -47,6 +47,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
@@ -93,6 +94,8 @@ fun NativeBookReader(
     lineHeight: Float,
     isBilingualMode: Boolean,
     translations: Map<Int, TranslationPair>,
+    initialPageIndex: Int? = null,
+    initialProgress: Float = 0f,
     seekCommandId: Int = 0,
     seekParagraphIndex: Int? = null,
     seekPageIndex: Int? = null,
@@ -149,6 +152,7 @@ fun NativeBookReader(
         val maxImageHeightPx = (contentHeightPx * 0.72f).coerceAtLeast(with(density) { 200.dp.toPx() })
         val maxImageHeightDp = with(density) { maxImageHeightPx.toDp() }
 
+        // Synchronous: fast with pre-computed plainText/linkSpans/anchorIds (no Jsoup)
         val entries = remember(paragraphs) { normalizeEntries(paragraphs) }
         val anchorMap = remember(paragraphs) { buildAnchorMap(paragraphs) }
         val linkColor = Color(0xFF5B8DEF)
@@ -182,6 +186,34 @@ fun NativeBookReader(
             initialValue = emptyList<ReaderPage>(),
             paginationEntries, contentWidthPx, contentHeightPx, fontSize, lineHeight
         ) {
+            if (paginationEntries.isEmpty()) {
+                value = emptyList()
+                return@produceState
+            }
+            // For large books: emit first pages early for instant display.
+            // Skip early emission when saved position needs restoring to avoid content shift.
+            val needsSeek = (initialPageIndex != null && initialPageIndex > 0) ||
+                (seekPageIndex != null && seekPageIndex > 0) ||
+                (initialProgress > 0.01f) ||
+                (seekProgress != null && seekProgress > 0.01f)
+            if (!needsSeek && paginationEntries.size > 50) {
+                val earlyPages = withContext(Dispatchers.Default) {
+                    paginateEntries(
+                        entries = paginationEntries.take(50),
+                        contentWidthPx = contentWidthPx,
+                        contentHeightPx = contentHeightPx,
+                        fontSizePx = fontSizePx,
+                        lineHeight = lineHeight,
+                        maxImageHeightPx = maxImageHeightPx,
+                        paragraphGapPx = paragraphGapPx,
+                        density = density.density
+                    )
+                }
+                if (earlyPages.isNotEmpty()) {
+                    value = earlyPages
+                }
+            }
+            // Complete pagination with all entries
             value = withContext(Dispatchers.Default) {
                 paginateEntries(
                     entries = paginationEntries,
@@ -198,8 +230,26 @@ fun NativeBookReader(
         val pages = pagesState.value
         val paragraphToPageMap = remember(pages) { buildParagraphToPageMap(pages) }
 
+        // Calculate the correct starting page once, when pages first become available
+        val resolvedStartPage = remember {
+            when {
+                initialPageIndex != null && initialPageIndex > 0 -> initialPageIndex
+                initialProgress > 0.01f -> null // need pages.size to calculate
+                else -> 0
+            }
+        }
+        val startPage = if (pages.isNotEmpty()) {
+            remember(resolvedStartPage, pages.size) {
+                resolvedStartPage?.coerceIn(0, pages.lastIndex)
+                    ?: (initialProgress.coerceIn(0f, 1f) * pages.lastIndex.toFloat()).roundToInt().coerceIn(0, pages.lastIndex)
+            }
+        } else 0
+
+        // Don't create pager until pages are ready — avoids flash at page 0
+        val pagerReady = pages.isNotEmpty()
+
         val pagerState = rememberPagerState(
-            initialPage = 0,
+            initialPage = startPage,
             pageCount = { pages.size.coerceAtLeast(1) }
         )
 
@@ -311,17 +361,30 @@ fun NativeBookReader(
                 seekProgress != null -> (seekProgress.coerceIn(0f, 1f) * pages.lastIndex.toFloat()).roundToInt()
                 else -> pagerState.currentPage
             }.coerceIn(0, pages.lastIndex)
-            pagerState.animateScrollToPage(target)
+            // First seek is the initial position restore — use instant scroll (no animation).
+            // The pager already starts at the correct page via initialPage, but this handles
+            // edge cases where pages change after creation (e.g., streaming pagination).
+            if (lastHandledSeekCommandId == 0) {
+                pagerState.scrollToPage(target)
+            } else {
+                pagerState.animateScrollToPage(target)
+            }
             lastHandledSeekCommandId = seekCommandId
+        }
+
+        // Show background while pages are loading (prevents flash at page 0)
+        if (!pagerReady) {
+            Box(Modifier.fillMaxSize().background(readerColors.background))
         }
 
         HorizontalPager(
             state = pagerState,
             beyondBoundsPageCount = 1,
-            userScrollEnabled = pages.size > 1 && selectionState == null,
+            userScrollEnabled = pagerReady && pages.size > 1 && selectionState == null,
             modifier = Modifier
                 .fillMaxSize()
                 .background(readerColors.background)
+                .then(if (pagerReady) Modifier else Modifier.alpha(0f))
         ) { pageIndex ->
             val page = pages.getOrNull(pageIndex)
             if (page == null) return@HorizontalPager
@@ -721,17 +784,13 @@ private data class ReaderPage(
 private fun normalizeEntries(paragraphs: List<ReaderParagraph>): List<NormalizedEntry> {
     return paragraphs.mapNotNull { paragraph ->
         if (!paragraph.imageSrc.isNullOrBlank()) {
-            val caption = paragraph.text.trim().ifBlank {
-                if (paragraph.html.isNotBlank()) Jsoup.parse(paragraph.html).text().trim() else ""
-            }
+            val caption = paragraph.text.trim().ifBlank { paragraph.plainText.trim() }
             val normalizedCaption = caption.takeUnless {
                 it.equals("image", ignoreCase = true) ||
                     it.equals("img", ignoreCase = true) ||
                     it.equals("figure", ignoreCase = true)
             }.orEmpty()
-            
-            android.util.Log.d("NativeBookReader", "Normalized Image: index=${paragraph.index}, src=${paragraph.imageSrc}")
-            
+
             return@mapNotNull NormalizedEntry(
                 paragraphIndex = paragraph.index,
                 text = normalizedCaption,
@@ -741,9 +800,16 @@ private fun normalizeEntries(paragraphs: List<ReaderParagraph>): List<Normalized
             )
         }
 
-        val parsed = extractTextAndLinks(paragraph.html, paragraph.text)
-        val text = parsed.first
-        val links = parsed.second
+        val text: String
+        val links: List<LinkSpan>
+        if (paragraph.plainText.isNotBlank()) {
+            text = paragraph.plainText
+            links = paragraph.linkSpans.map { LinkSpan(it.start, it.end, it.href) }
+        } else {
+            val parsed = extractTextAndLinks(paragraph.html, paragraph.text)
+            text = parsed.first
+            links = parsed.second
+        }
 
         if (text.isBlank()) return@mapNotNull null
         if (!paragraph.isHeading && isGenericImageLabel(text)) return@mapNotNull null
@@ -858,15 +924,20 @@ private fun remapLinksAfterNormalization(
 private fun buildAnchorMap(paragraphs: List<ReaderParagraph>): Map<String, Int> {
     val map = mutableMapOf<String, Int>()
     for (p in paragraphs) {
-        if (p.html.isBlank()) continue
-        val doc = Jsoup.parse(p.html)
-        doc.select("[id]").forEach { el ->
-            val id = el.id().trim()
-            if (id.isNotBlank()) map.putIfAbsent(id, p.index)
-        }
-        doc.select("a[name]").forEach { el ->
-            val name = el.attr("name").trim()
-            if (name.isNotBlank()) map.putIfAbsent(name, p.index)
+        if (p.anchorIds.isNotEmpty()) {
+            for (id in p.anchorIds) {
+                map.putIfAbsent(id, p.index)
+            }
+        } else if (p.html.isNotBlank()) {
+            val doc = Jsoup.parse(p.html)
+            doc.select("[id]").forEach { el ->
+                val id = el.id().trim()
+                if (id.isNotBlank()) map.putIfAbsent(id, p.index)
+            }
+            doc.select("a[name]").forEach { el ->
+                val name = el.attr("name").trim()
+                if (name.isNotBlank()) map.putIfAbsent(name, p.index)
+            }
         }
     }
     return map

@@ -29,7 +29,7 @@ class ReaderViewModel @Inject constructor(
     private val bookReadingRepository: BookReadingRepository,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
-    private val bookPagePrefs = appContext.getSharedPreferences("reader_book_page_state", Context.MODE_PRIVATE)
+    private val bookPagePrefs by lazy { appContext.getSharedPreferences("reader_book_page_state", Context.MODE_PRIVATE) }
     private val contentTypeStr: String = savedStateHandle.get<String>("contentType") ?: ""
     private val contentIdLong: Long = (savedStateHandle.get<String>("contentId") ?: "0").toLongOrNull() ?: 0L
     private val _uiState = MutableStateFlow(
@@ -169,7 +169,10 @@ class ReaderViewModel @Inject constructor(
                 text = paragraph.text,
                 isHeading = paragraph.isHeading,
                 html = paragraph.html,
-                imageSrc = paragraph.imageSrc
+                imageSrc = paragraph.imageSrc,
+                plainText = paragraph.plainText,
+                linkSpans = paragraph.linkSpans,
+                anchorIds = paragraph.anchorIds
             )
         }
         val readerChapters = structured.chapters.map {
@@ -268,9 +271,9 @@ class ReaderViewModel @Inject constructor(
         }.coerceIn(0f, 1f)
     }
 
-    private fun readSavedBookPageIndex(contentId: Long): Int? {
+    private suspend fun readSavedBookPageIndex(contentId: Long): Int? = withContext(Dispatchers.IO) {
         val page = bookPagePrefs.getInt("book_page_$contentId", -1)
-        return page.takeIf { it >= 0 }
+        page.takeIf { it >= 0 }
     }
 
     private fun saveBookPageIndex(contentId: Long, pageIndex: Int) {

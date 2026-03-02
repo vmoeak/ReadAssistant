@@ -6,10 +6,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ArticleDao {
-    @Query("SELECT * FROM articles WHERE feedId = :feedId ORDER BY publishedAt DESC")
+    @Query("SELECT * FROM articles WHERE feedId = :feedId ORDER BY publishedAt DESC, id DESC")
     fun getArticlesByFeed(feedId: Long): Flow<List<ArticleEntity>>
 
-    @Query("SELECT * FROM articles WHERE isStarred = 1 ORDER BY publishedAt DESC")
+    @Query("SELECT * FROM articles WHERE isStarred = 1 ORDER BY publishedAt DESC, id DESC")
     fun getStarredArticles(): Flow<List<ArticleEntity>>
 
     @Query("SELECT * FROM articles WHERE id = :id")
@@ -35,6 +35,28 @@ interface ArticleDao {
 
     @Query("UPDATE articles SET extractedContent = :content WHERE id = :id")
     suspend fun updateExtractedContent(id: Long, content: String)
+
+    @Query(
+        """
+        UPDATE articles
+        SET title = :title,
+            description = :description,
+            content = :content,
+            author = :author,
+            imageUrl = :imageUrl,
+            publishedAt = :publishedAt
+        WHERE id = :id
+        """
+    )
+    suspend fun updateArticleMetadata(
+        id: Long,
+        title: String,
+        description: String,
+        content: String,
+        author: String?,
+        imageUrl: String?,
+        publishedAt: Long
+    )
 
     @Query("DELETE FROM articles WHERE feedId = :feedId")
     suspend fun deleteByFeed(feedId: Long)

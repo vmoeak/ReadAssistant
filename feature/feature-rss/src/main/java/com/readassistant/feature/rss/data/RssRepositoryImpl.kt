@@ -2,6 +2,7 @@ package com.readassistant.feature.rss.data
 
 import com.readassistant.core.data.db.dao.ArticleDao
 import com.readassistant.core.data.db.dao.FeedDao
+import com.readassistant.core.data.db.entity.ArticleEntity
 import com.readassistant.core.data.db.entity.FeedEntity
 import com.readassistant.feature.rss.domain.Feed
 import com.readassistant.feature.rss.domain.FeedArticle
@@ -41,9 +42,25 @@ class RssRepositoryImpl @Inject constructor(
     suspend fun refreshFeed(feedId: Long) {
         val feed = feedDao.getFeedById(feedId) ?: return
         val result = fetcher.fetchFeed(feed.url)
-        val newArticles = result.articles.map { it.copy(feedId = feedId) }
+        val newArticles = mutableListOf<ArticleEntity>()
+        result.articles.map { it.copy(feedId = feedId) }
             .filter { it.link.isNotBlank() }
-            .filter { articleDao.getArticleByLink(it.link) == null }
+            .forEach { fetched ->
+                val existing = articleDao.getArticleByLink(fetched.link)
+                if (existing == null) {
+                    newArticles.add(fetched)
+                } else {
+                    articleDao.updateArticleMetadata(
+                        id = existing.id,
+                        title = fetched.title,
+                        description = fetched.description,
+                        content = fetched.content,
+                        author = fetched.author,
+                        imageUrl = fetched.imageUrl,
+                        publishedAt = fetched.publishedAt
+                    )
+                }
+            }
         if (newArticles.isNotEmpty()) articleDao.insertAll(newArticles)
         feedDao.updateUnreadCount(feedId, articleDao.getUnreadCount(feedId))
         feedDao.updateLastFetched(feedId, System.currentTimeMillis())

@@ -1,5 +1,9 @@
 package com.readassistant.feature.rss.presentation
 
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,24 +22,79 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.readassistant.feature.rss.data.FeedImportResult
 import com.readassistant.feature.rss.data.RssRepositoryImpl
 import com.readassistant.feature.rss.domain.Feed
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
-class FeedListViewModel @Inject constructor(private val repository: RssRepositoryImpl) : ViewModel() {
+class FeedListViewModel @Inject constructor(
+    private val repository: RssRepositoryImpl,
+    @ApplicationContext private val appContext: Context
+) : ViewModel() {
     val feeds: StateFlow<List<Feed>> = repository.getAllFeeds().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
 
     fun addFeed(url: String) { viewModelScope.launch { _isLoading.value = true; _error.value = null; try { repository.addFeed(url) } catch (e: Exception) { _error.value = e.message }; _isLoading.value = false } }
     fun deleteFeed(feedId: Long) { viewModelScope.launch { repository.deleteFeed(feedId) } }
     fun refreshAll() { viewModelScope.launch { _isLoading.value = true; try { repository.refreshAllFeeds() } catch (_: Exception) {}; _isLoading.value = false } }
+    fun clearMessage() { _message.value = null }
+    fun clearError() { _error.value = null }
+
+    fun exportFeedsToUri(uri: Uri) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _error.value = null
+            runCatching {
+                val opml = repository.exportFeedsAsOpml()
+                withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(opml.toByteArray(Charsets.UTF_8))
+                    } ?: throw IllegalStateException("Unable to open destination file")
+                }
+            }.onSuccess {
+                _message.value = "Feeds exported successfully"
+            }.onFailure { e ->
+                _error.value = e.message ?: "Export failed"
+            }
+            _isLoading.value = false
+        }
+    }
+
+    fun importFeedsFromUri(uri: Uri) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _error.value = null
+            runCatching {
+                val content = withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openInputStream(uri)?.use { stream ->
+                        stream.bufferedReader(Charsets.UTF_8).readText()
+                    } ?: throw IllegalStateException("Unable to open selected file")
+                }
+                repository.importFeedsFromOpml(content)
+            }.onSuccess { result ->
+                _message.value = buildImportMessage(result)
+            }.onFailure { e ->
+                _error.value = e.message ?: "Import failed"
+            }
+            _isLoading.value = false
+        }
+    }
+
+    private fun buildImportMessage(result: FeedImportResult): String {
+        return "Imported ${result.importedCount}, skipped ${result.skippedCount}, invalid ${result.invalidCount}"
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,7 +102,10 @@ class FeedListViewModel @Inject constructor(private val repository: RssRepositor
 fun FeedListScreen(onFeedClick: (Long) -> Unit, viewModel: FeedListViewModel = hiltViewModel()) {
     val feeds by viewModel.feeds.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val error by viewModel.error.collectAsState()
+    val message by viewModel.message.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
 
     val pullRefreshState = rememberPullToRefreshState()
     if (pullRefreshState.isRefreshing) {
@@ -55,9 +117,60 @@ fun FeedListScreen(onFeedClick: (Long) -> Unit, viewModel: FeedListViewModel = h
         if (!isLoading) pullRefreshState.endRefresh()
     }
 
+    LaunchedEffect(error) {
+        if (!error.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(error.orEmpty())
+            viewModel.clearError()
+        }
+    }
+    LaunchedEffect(message) {
+        if (!message.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(message.orEmpty())
+            viewModel.clearMessage()
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/x-opml+xml")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportFeedsToUri(uri)
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importFeedsFromUri(uri)
+        }
+    }
+
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Feeds") }) },
-        floatingActionButton = { FloatingActionButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.Add, contentDescription = "Add Feed") } }
+        topBar = {
+            TopAppBar(
+                title = { Text("Feeds") },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            exportLauncher.launch("feeds-${System.currentTimeMillis()}.opml")
+                        }
+                    ) {
+                        Icon(Icons.Default.Upload, contentDescription = "Export feeds")
+                    }
+                    IconButton(
+                        onClick = {
+                            importLauncher.launch(
+                                arrayOf("text/x-opml+xml", "text/xml", "application/xml", "text/plain")
+                            )
+                        }
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = "Import feeds")
+                    }
+                }
+            )
+        },
+        floatingActionButton = { FloatingActionButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.Add, contentDescription = "Add Feed") } },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Box(
             modifier = Modifier

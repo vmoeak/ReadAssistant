@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.0">
+  <head><title>ReadAssistant RSS Feeds Backup</title></head>
+  <body>
+    <outline text="Claude Blog" title="Claude Blog" type="rss" xmlUrl="http://66.94.126.221:1200/anthropic/claude-blog"/>
+    <outline text="OpenAI News" title="OpenAI News" type="rss" xmlUrl="http://66.94.126.221:1200/openai/news"/>
+    <outline text="Blog · Cursor" title="Blog · Cursor" type="rss" xmlUrl="http://66.94.126.221:1200/cursor/blog"/>
+    <outline text="静かな森" title="静かな森" type="rss" xmlUrl="https://innei.in/feed"/>
+    <outline text="宝玉AI" title="宝玉AI" type="rss" xmlUrl="http://118.25.177.90:4000/feeds/MP_WXS_3957812448.atom"/>
+    <outline text="静易墨" title="静易墨" type="rss" xmlUrl="http://118.25.177.90:4000/feeds/MP_WXS_3531115330.atom"/>
+    <outline text="也谈钱" title="也谈钱" type="rss" xmlUrl="http://118.25.177.90:4000/feeds/MP_WXS_3536177477.atom"/>
+    <outline text="浮之静" title="浮之静" type="rss" xmlUrl="http://118.25.177.90:4000/feeds/MP_WXS_3236165275.atom"/>
+    <outline text="卡尔的AI沃茨" title="卡尔的AI沃茨" type="rss" xmlUrl="http://118.25.177.90:4000/feeds/MP_WXS_3871977637.atom"/>
+    <outline text="Boris Tane" title="Boris Tane" type="rss" xmlUrl="https://boristane.com/rss.xml"/>
+    <outline text="Simon Willison's Weblog" title="Simon Willison's Weblog" type="rss" xmlUrl="https://simonwillison.net/atom/everything/"/>
+  </body>
+</opml>
